@@ -55,3 +55,14 @@ def test_local_key_creation_does_not_print_secret(tmp_path, monkeypatch, capsys)
     key = (tmp_path / "encryption-key.txt").read_text()
     assert len(key) == 44
     assert key not in capsys.readouterr().out
+
+
+def test_cli_keeps_fixed_external_error_codes_without_printing_urls(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("STATE_ENCRYPTION_KEY", generate_key())
+
+    def fail(*args):
+        raise RuntimeError("telegram_unavailable")
+
+    monkeypatch.setattr(cli, "_setup", fail)
+    assert cli.main(["setup", "--directory", str(tmp_path)]) == 1
+    assert capsys.readouterr().err == "teleping_error: telegram_unavailable\n"
