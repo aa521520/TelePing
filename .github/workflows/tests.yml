@@ -27,3 +27,7 @@ jobs:
           python -m playwright install --with-deps chromium
       - run: python -m ruff check teleping tests
       - run: python -m pytest -q
+      - name: Test realtime service and Python encryption compatibility
+        env:
+          PYTHON: python
+        run: node --test cloudflare/test/*.test.mjs

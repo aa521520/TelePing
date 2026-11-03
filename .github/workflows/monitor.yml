@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'setup 注册菜单并加密收集群信息；run 执行一次控制与检测'
+        description: 'run 领取实时服务安排的检测任务'
         type: choice
-        options: [setup, run]
-        default: setup
+        options: [run]
+        default: run
+      force:
+        description: '立即完整检测一次（人工验收时勾选）'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -29,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
-      contents: write
+      contents: read
     outputs:
       should_check: ${{ steps.control.outputs.should_check }}
       matrix: ${{ steps.control.outputs.matrix }}
@@ -44,31 +48,19 @@ jobs:
           cache-dependency-path: requirements.lock
       - name: Install pinned dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.lock
-      - name: Register Chinese menu and encrypt setup information
-        id: setup
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'setup'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
-        run: python -m teleping setup
-      - name: Handle authorized commands and prepare private batches
+      - name: Claim realtime work and prepare private batches
         id: control
-        if: github.event_name != 'workflow_dispatch' || inputs.mode != 'setup'
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REALTIME_API_URL: ${{ vars.REALTIME_API_URL }}
+          RUNNER_API_TOKEN: ${{ secrets.RUNNER_API_TOKEN }}
           STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
-          BASIC_DOMAINS: ${{ secrets.BASIC_DOMAINS }}
-        run: python -m teleping control
-      - name: Save encrypted setup information
-        if: steps.setup.outputs.setup_complete == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: setup-private-${{ env.ROUND_ID }}
-          path: work/setup.enc
-          retention-days: 1
-          compression-level: 0
+          FORCE_CHECK: ${{ github.event_name == 'workflow_dispatch' && inputs.force == true }}
+        run: |
+          if [ "$FORCE_CHECK" = "true" ]; then
+            python -m teleping control --force
+          else
+            python -m teleping control
+          fi
       - name: Save encrypted batch plan
         if: steps.control.outputs.should_check == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -127,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,6 +130,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.lock
       - run: python -m pip install --disable-pip-version-check -r requirements.lock
+      - name: Collect encrypted plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: plan-${{ env.ROUND_ID }}
+          path: work
       - name: Collect encrypted results
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -145,10 +142,9 @@ jobs:
           pattern: result-${{ env.ROUND_ID }}-*
           merge-multiple: true
           path: work
-      - name: Send private summary and persist encrypted state
+      - name: Commit encrypted results to realtime service
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REALTIME_API_URL: ${{ vars.REALTIME_API_URL }}
+          RUNNER_API_TOKEN: ${{ secrets.RUNNER_API_TOKEN }}
           STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: python -m teleping finish
