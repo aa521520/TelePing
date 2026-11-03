@@ -273,3 +273,28 @@ def test_no_argument_commands_reject_trailing_input(bot, state, command):
     original = deepcopy(state)
     assert invoke(bot, state, command)
     assert state == original
+
+
+def test_delete_batch_deduplicates_and_counts_temporary_and_missing(bot, state):
+    first, temporary, kept = 'http://one.example.test/', 'http://temp.example.test/', 'http://kept.example.test/'
+    state.update(targets=[first, kept], pending_targets=[first, temporary], forced_targets=[temporary])
+    state['site_states'][first] = {'status': 'failed'}
+    reply = ''.join(invoke(bot, state, '/delete\none.example.test\n\nhttp://one.example.test/\ntemp.example.test\nmissing.example.test'))
+    assert state['targets'] == [kept]
+    assert state['pending_targets'] == [] and state['forced_targets'] == []
+    assert state['site_states'][first] == {'status': 'failed'}
+    assert '已删除 2' in reply and '未在清单或排队 1' in reply and '剩余 1' in reply
+
+
+def test_delete_batch_invalid_is_atomic_and_does_not_echo(bot, state):
+    state['targets'] = ['http://one.example.test/']
+    original = deepcopy(state)
+    reply = ''.join(invoke(bot, state, '/delete\none.example.test\nhttps://user:secret@example.test'))
+    assert state == original
+    assert '无效' in reply and 'secret' not in reply
+
+
+def test_delete_usage_and_help_describe_one_per_line(bot, state):
+    assert '每行一个' in ''.join(invoke(bot, state, '/delete'))
+    assert '每行一个' in ''.join(invoke(bot, state, '/help')).split('/delete', 1)[1].split('\n', 1)[0]
+    assert '每行一个' in next(item['description'] for item in bot.COMMANDS if item['command'] == 'delete')
