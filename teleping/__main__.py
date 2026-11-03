@@ -126,7 +126,8 @@ def main(argv=None) -> int:
         return 0
     except Exception as error:
         # Never interpolate exception text: HTTP libraries include access-bearing URLs.
-        code = str(error) if str(error) in {"telegram_webhook_conflict", "encrypted_data_invalid", "encryption_key_invalid", "github_state_conflict", "configuration_missing", "group_configuration_invalid"} else "operation_failed"
+        safe_codes = {"telegram_webhook_conflict", "telegram_unavailable", "telegram_api_failed", "telegram_rate_limited", "encrypted_data_invalid", "encryption_key_invalid", "github_state_conflict", "github_unavailable", "github_request_failed", "default_branch_missing", "state_branch_missing", "state_missing", "configuration_missing", "group_configuration_invalid"}
+        code = str(error) if str(error) in safe_codes else "operation_failed"
         print(f"teleping_error: {code}", file=sys.stderr)
         return 1
 
