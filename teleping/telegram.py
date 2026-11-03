@@ -16,13 +16,20 @@ import httpx
 class TelegramFailure(RuntimeError):
     """Fixed error code plus allowlisted method and numeric status; never a URL or body."""
 
-    def __init__(self, code, *, method, http_status=0, api_status=0):
+    def __init__(self, code, *, method, http_status=0, api_status=0, scope="", description=""):
         super().__init__(code)
         allowed = {"getMe", "getWebhookInfo", "getUpdates", "getChatAdministrators", "setMyCommands", "setChatMenuButton", "sendMessage", "getMyCommands"}
         method = method if method in allowed else "unknown"
         http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else 0
         api_status = api_status if type(api_status) is int and 100 <= api_status <= 599 else 0
         self.safe_context = f"method={method}; http={http_status}; api={api_status}"
+        if scope in {"default", "chat", "chat_administrators"}:
+            self.safe_context += f"; scope={scope}"
+        normalized = description.lower().replace("_", " ") if isinstance(description, str) else ""
+        reasons = {"chat not found": "chat_not_found", "chat id is empty": "chat_id_missing", "upgraded to a supergroup": "chat_migrated", "bot command description": "command_description_invalid", "bot command invalid": "command_invalid", "not enough rights": "insufficient_rights", "bot was kicked": "bot_removed"}
+        reason = next((value for phrase, value in reasons.items() if phrase in normalized), None)
+        if reason:
+            self.safe_context += f"; reason={reason}"
 
 
 def _chunks(text: str) -> Iterator[str]:
@@ -93,7 +100,8 @@ class TelegramClient:
                 self.sleep(delay)
                 continue
             if response.status_code >= 400 or data.get("ok") is not True or "result" not in data:
-                raise TelegramFailure("telegram_api_failed", method=method, http_status=response.status_code, api_status=data.get("error_code", 0)) from None
+                scope = (payload or {}).get("scope", {})
+                raise TelegramFailure("telegram_api_failed", method=method, http_status=response.status_code, api_status=data.get("error_code", 0), scope=scope.get("type", "") if isinstance(scope, dict) else "", description=data.get("description", "")) from None
             return data["result"]
         raise RuntimeError("telegram_rate_limited") from None
 

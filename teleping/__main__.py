@@ -12,6 +12,7 @@ from pathlib import Path
 from .bot import COMMANDS
 from .crypto import decrypt, encrypt, generate_key
 from .jobs import process_batch
+from .remote import RemoteService, finish_remote
 from .runtime import control_round, finish_round
 from .state import GitHubStateStore
 from .telegram import TelegramClient, TelegramFailure
@@ -62,6 +63,7 @@ def main(argv=None) -> int:
     parser.add_argument("--directory", default="work")
     parser.add_argument("--run-id", default=os.environ.get("ROUND_ID", "manual"))
     parser.add_argument("--batch", type=int, default=0)
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
     logging.disable(logging.CRITICAL)
     directory = Path(args.directory)
@@ -90,8 +92,12 @@ def main(argv=None) -> int:
             (directory / f"worker-{args.batch}.enc").write_bytes(encrypt(bundle, key, purpose=f"batch:{args.run_id}:{args.batch}"))
             print(f"batch_complete: count={len(bundle['results'])}")
         elif args.mode == "control":
-            store, telegram, chat_id = _services()
-            plan = control_round(store, telegram, seed_text=os.environ.get("BASIC_DOMAINS", ""), chat_id=chat_id, now=time.time(), run_id=args.run_id)
+            if os.environ.get("REALTIME_API_URL"):
+                service = RemoteService(_required("REALTIME_API_URL"), _required("RUNNER_API_TOKEN"), key)
+                plan = service.claim(args.run_id, force=args.force)
+            else:
+                store, telegram, chat_id = _services()
+                plan = control_round(store, telegram, seed_text=os.environ.get("BASIC_DOMAINS", ""), chat_id=chat_id, now=time.time(), run_id=args.run_id)
             _output("should_check", "true" if plan else "false")
             _output("matrix", json.dumps({"batch": list(range(len(plan["batches"]))) if plan else [0]}, separators=(",", ":")))
             if plan:
@@ -100,15 +106,22 @@ def main(argv=None) -> int:
             else:
                 print("control_complete: no_check_due")
         elif args.mode == "finish":
-            store, telegram, _ = _services()
-            state = store.load()
-            active = (state or {}).get("active_round", {})
-            if active.get("run_id") != args.run_id:
-                print("finish_skipped: no_active_round")
-                return 0
-            plan = {**active}
+            realtime = bool(os.environ.get("REALTIME_API_URL"))
+            if realtime:
+                service = RemoteService(_required("REALTIME_API_URL"), _required("RUNNER_API_TOKEN"), key)
+                plan = decrypt((directory / "plan.enc").read_bytes(), key, purpose=f"plan:{args.run_id}")
+                if plan.get("run_id") != args.run_id:
+                    raise ValueError("batch_invalid")
+            else:
+                store, telegram, _ = _services()
+                state = store.load()
+                active = (state or {}).get("active_round", {})
+                if active.get("run_id") != args.run_id:
+                    print("finish_skipped: no_active_round")
+                    return 0
+                plan = {**active}
             results, cache = [], {}
-            batches = (len(plan["expected_targets"]) + 49) // 50
+            batches = len(plan["batches"]) if realtime else (len(plan["expected_targets"]) + 49) // 50
             for index in range(batches):
                 filename = directory / f"worker-{index}.enc"
                 if not filename.exists():
@@ -121,12 +134,16 @@ def main(argv=None) -> int:
                     cache.update(bundle.get("expiry_cache_updates", {}))
                 except (ValueError, KeyError, TypeError):
                     continue
-            delivered = finish_round(store, telegram, plan, results, cache_updates=cache, now=time.time())
-            print(f"round_complete: count={len(plan['expected_targets'])}; received={len(results)}; delivered={'yes' if delivered else 'pending'}")
+            if realtime:
+                count, received = finish_remote(service, plan, results, cache, now=time.time())
+                print(f"round_complete: count={count}; received={received}")
+            else:
+                delivered = finish_round(store, telegram, plan, results, cache_updates=cache, now=time.time())
+                print(f"round_complete: count={len(plan['expected_targets'])}; received={len(results)}; delivered={'yes' if delivered else 'pending'}")
         return 0
     except Exception as error:
         # Never interpolate exception text: HTTP libraries include access-bearing URLs.
-        safe_codes = {"telegram_webhook_conflict", "telegram_unavailable", "telegram_api_failed", "telegram_rate_limited", "encrypted_data_invalid", "encryption_key_invalid", "github_state_conflict", "github_unavailable", "github_request_failed", "default_branch_missing", "state_branch_missing", "state_missing", "configuration_missing", "group_configuration_invalid"}
+        safe_codes = {"telegram_webhook_conflict", "telegram_unavailable", "telegram_api_failed", "telegram_rate_limited", "encrypted_data_invalid", "encryption_key_invalid", "github_state_conflict", "github_unavailable", "github_request_failed", "default_branch_missing", "state_branch_missing", "state_missing", "configuration_missing", "group_configuration_invalid", "realtime_url_invalid", "realtime_unauthorized", "realtime_request_failed", "realtime_conflict", "realtime_payload_invalid", "revision_conflict", "run_id_invalid"}
         code = str(error) if str(error) in safe_codes else "operation_failed"
         context = "; " + error.safe_context if isinstance(error, TelegramFailure) and code != "operation_failed" else ""
         print(f"teleping_error: {code}{context}", file=sys.stderr)
