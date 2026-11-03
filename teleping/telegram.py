@@ -93,6 +93,25 @@ class TelegramClient:
             raise RuntimeError("telegram_api_failed") from None
         return value
 
+    def administrator_ids(self) -> set[int]:
+        value = self.call("getChatAdministrators", {"chat_id": self.chat_id})
+        if not isinstance(value, list):
+            raise RuntimeError("telegram_api_failed") from None
+        result: set[int] = set()
+        for member in value:
+            if not isinstance(member, dict) or not isinstance(member.get("status"), str):
+                raise RuntimeError("telegram_api_failed") from None
+            user = member.get("user")
+            if not isinstance(user, dict):
+                raise RuntimeError("telegram_api_failed") from None
+            user_id = user.get("id")
+            is_bot = user.get("is_bot")
+            if type(user_id) is not int or user_id <= 0 or type(is_bot) is not bool:
+                raise RuntimeError("telegram_api_failed") from None
+            if member["status"] in {"creator", "administrator"} and not is_bot:
+                result.add(user_id)
+        return result
+
     def webhook_url(self) -> str:
         value = self.call("getWebhookInfo")
         if not isinstance(value, dict) or not isinstance(value.get("url"), str):

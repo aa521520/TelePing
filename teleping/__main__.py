@@ -34,10 +34,9 @@ def _services():
     key = _required("STATE_ENCRYPTION_KEY")
     store = GitHubStateStore(_required("GITHUB_REPOSITORY"), _required("GITHUB_TOKEN"), key, default_branch=os.environ.get("DEFAULT_BRANCH", "main"))
     chat_id = int(_required("TELEGRAM_CHAT_ID"))
-    administrators = {int(item.strip()) for item in _required("TELEGRAM_ADMIN_IDS").replace("\n", ",").split(",") if item.strip()}
-    if chat_id >= 0 or not administrators or any(item <= 0 for item in administrators):
+    if chat_id >= 0:
         raise ValueError("group_configuration_invalid")
-    return store, TelegramClient(_required("TELEGRAM_BOT_TOKEN"), chat_id), chat_id, administrators
+    return store, TelegramClient(_required("TELEGRAM_BOT_TOKEN"), chat_id), chat_id
 
 
 def _setup(directory: Path, key: str) -> None:
@@ -51,9 +50,7 @@ def _setup(directory: Path, key: str) -> None:
         chat, sender = message.get("chat", {}), message.get("from", {})
         if chat.get("type") not in {"group", "supergroup"} or "sender_chat" in message or sender.get("is_bot"):
             continue
-        group = groups.setdefault(str(chat["id"]), {"chat_id": chat["id"], "title": chat.get("title", ""), "users": {}})
-        if isinstance(sender.get("id"), int):
-            group["users"][str(sender["id"])] = {"id": sender["id"], "username": sender.get("username", ""), "name": sender.get("first_name", "")}
+        groups.setdefault(str(chat["id"]), {"chat_id": chat["id"], "title": chat.get("title", "")})
     (directory / "setup.enc").write_bytes(encrypt({"groups": list(groups.values())}, key, purpose="setup"))
     _output("setup_complete", "true")
     print("setup_complete: menu_registered; discovery_encrypted")
@@ -93,8 +90,8 @@ def main(argv=None) -> int:
             (directory / f"worker-{args.batch}.enc").write_bytes(encrypt(bundle, key, purpose=f"batch:{args.run_id}:{args.batch}"))
             print(f"batch_complete: count={len(bundle['results'])}")
         elif args.mode == "control":
-            store, telegram, chat_id, administrators = _services()
-            plan = control_round(store, telegram, seed_text=os.environ.get("BASIC_DOMAINS", ""), chat_id=chat_id, admin_ids=administrators, now=time.time(), run_id=args.run_id)
+            store, telegram, chat_id = _services()
+            plan = control_round(store, telegram, seed_text=os.environ.get("BASIC_DOMAINS", ""), chat_id=chat_id, now=time.time(), run_id=args.run_id)
             _output("should_check", "true" if plan else "false")
             _output("matrix", json.dumps({"batch": list(range(len(plan["batches"]))) if plan else [0]}, separators=(",", ":")))
             if plan:
@@ -103,7 +100,7 @@ def main(argv=None) -> int:
             else:
                 print("control_complete: no_check_due")
         elif args.mode == "finish":
-            store, telegram, _, _ = _services()
+            store, telegram, _ = _services()
             state = store.load()
             active = (state or {}).get("active_round", {})
             if active.get("run_id") != args.run_id:

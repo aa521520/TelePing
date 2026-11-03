@@ -27,7 +27,7 @@ def flush_outbox(store, telegram, state: dict, *, limit: int = 20) -> bool:
     return not state.get("outbox")
 
 
-def control_round(store, telegram, *, seed_text: str, chat_id: int, admin_ids: set[int], now: float, run_id: str) -> dict | None:
+def control_round(store, telegram, *, seed_text: str, chat_id: int, now: float, run_id: str) -> dict | None:
     state = store.load()
     if state is None:
         state = new_state(seed_text)
@@ -54,7 +54,13 @@ def control_round(store, telegram, *, seed_text: str, chat_id: int, admin_ids: s
             update_id = update.get("update_id")
             if not isinstance(update_id, int) or update_id <= state.get("last_update_id", -1):
                 continue
-            replies.extend(handle_update(state, update, chat_id=chat_id, admin_ids=admin_ids, bot_username=username))
+            message = update.get("message", {})
+            current_admins = set()
+            if isinstance(message, dict) and isinstance(message.get("chat"), dict) and message["chat"].get("id") == chat_id and isinstance(message.get("text"), str) and message["text"].lstrip().startswith("/"):
+                # Resolve live roles at processing time; a demoted administrator loses access immediately.
+                # On API failure do not persist/ack this page, so an unverified command can retry safely.
+                current_admins = telegram.administrator_ids()
+            replies.extend(handle_update(state, update, chat_id=chat_id, admin_ids=current_admins, bot_username=username))
             state["last_update_id"] = update_id
         if replies:
             queue_texts(state, ["\n\n".join(replies)], prefix=f"command:{run_id}")
