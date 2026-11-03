@@ -27,7 +27,8 @@ def test_setup_registers_menu_but_only_writes_encrypted_private_identity(tmp_pat
     encrypted = (tmp_path / "setup.enc").read_bytes()
     payload = decrypt(encrypted, key, purpose="setup")
     assert payload["groups"][0]["chat_id"] == -123
-    assert payload["groups"][0]["users"]["456"]["name"] == "private-user-canary"
+    assert payload["groups"][0]["title"] == "private-group-canary"
+    assert "private-user-canary" not in str(payload)
     assert "private-message-must-not-be-stored" not in str(payload)
     public_output = capsys.readouterr()
     for value in ("private-group-canary", "private-user-canary", "private-token-canary", key):

@@ -13,6 +13,54 @@ def make_client(handler, **kwargs):
     )
 
 
+def test_administrator_ids_refreshes_and_only_includes_human_administrators():
+    replies = iter([
+        [
+            {"status": "creator", "user": {"id": 1, "is_bot": False}},
+            {"status": "administrator", "user": {"id": 2, "is_bot": False}},
+            {"status": "administrator", "user": {"id": 3, "is_bot": True}},
+            {"status": "member", "user": {"id": 4, "is_bot": False}},
+        ],
+        [{"status": "creator", "user": {"id": 1, "is_bot": False}}],
+        [],
+    ])
+
+    def handler(request):
+        assert request.url.path.endswith("/getChatAdministrators")
+        assert json.loads(request.content) == {"chat_id": -100123}
+        return httpx.Response(200, json={"ok": True, "result": next(replies)})
+
+    bot = make_client(handler)
+    assert bot.administrator_ids() == {1, 2}
+    assert bot.administrator_ids() == {1}
+    assert bot.administrator_ids() == set()
+
+
+@pytest.mark.parametrize("value", [None, {}, [None], [{}], [{"status": "creator"}],
+    [{"status": "creator", "user": None}],
+    *[{"status": "creator", "user": {"id": bad, "is_bot": False}} for bad in (True, "1", 0, -1)],
+    {"status": "administrator", "user": {"id": 1, "is_bot": False}},
+    [{"status": "creator", "user": {"id": 1}}],
+    [{"status": "creator", "user": {"id": 1, "is_bot": "false"}}],
+])
+def test_administrator_ids_rejects_malformed_responses(value):
+    def handler(request):
+        return httpx.Response(200, json={"ok": True, "result": value})
+
+    with pytest.raises(RuntimeError, match="^telegram_api_failed$"):
+        make_client(handler).administrator_ids()
+
+
+def test_administrator_ids_propagates_safe_api_failure(capsys):
+    def handler(request):
+        raise httpx.ConnectError("test-secret " + str(request.url), request=request)
+
+    with pytest.raises(RuntimeError, match="^telegram_unavailable$") as error:
+        make_client(handler).administrator_ids()
+    assert error.value.__suppress_context__
+    assert capsys.readouterr() == ("", "")
+
+
 def test_bot_api_payloads_and_menu_scopes():
     requests = []
 
