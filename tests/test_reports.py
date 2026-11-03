@@ -105,12 +105,13 @@ def test_missing_result_preserves_confirmed_failure():
     assert state["last_summary"]["unmeasured"] == 1
 
 
-def test_entry_https_failure_is_only_changed_warning():
+def test_entry_https_failure_does_not_create_a_report_message():
     state = {}
-    messages = finish(state, [result(entry_https="failed")])
-    assert state["last_summary"]["ok"] == 1 and state["last_summary"]["failed"] == 0
-    assert len(messages) == 2 and "入口 HTTPS" in messages[1]
-    assert len(finish(state, [result(entry_https="failed")])) == 1
+    for entry in ("failed", "failed", "ok", "failed"):
+        messages = finish(state, [result(entry_https=entry)])
+        assert state["last_summary"]["ok"] == 1 and state["last_summary"]["failed"] == 0
+        assert len(messages) == 1
+        assert "入口 HTTPS 提醒" not in "\n".join(messages)
 
 
 def expiry(days, *, status="ok"):
