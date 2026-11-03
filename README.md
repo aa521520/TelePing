@@ -2,7 +2,7 @@
 
 TelePing 用来批量检查网站，并在指定 Telegram 群里发送中文报告。新版使用 Cloudflare 接收群内操作、保存加密状态和发送消息；GitHub Actions 负责启动浏览器进行批量检测。
 
-**当前版本仍需完成部署与实际验收，本文介绍配置方式和预期功能，不代表已经在线运行成功。**
+部署时应先完成配置和一次实际检测验收，再开启定时任务。群内指令实时接收，浏览器检测结果仍需等待 GitHub 启动并执行任务。
 
 ## 群里怎么用
 
@@ -57,7 +57,7 @@ https://www.example.org/path
 
 1. 准备 GitHub 仓库、Cloudflare Workers 和 SQLite Durable Object、Telegram 专用机器人及目标群。将机器人加入群，并确认群号及管理员身份。Cloudflare 免费计划支持 SQLite Durable Objects，但有用量限制，参见 [Cloudflare 官方限制](https://developers.cloudflare.com/durable-objects/platform/limits/)。
 2. 配置 Cloudflare Worker：绑定名为 `STATE` 的 Durable Object，并在 Worker 的机密设置中填写下表所需项；普通变量设置 `GITHUB_REPOSITORY`（仓库所有者/仓库名）、`WORKFLOW_FILE`（`monitor.yml`）及 `WORKFLOW_REF`（部署所用分支）。`BASIC_DOMAINS` 仅首次建立状态时导入，不会覆盖后续群内修改。
-3. 在 GitHub 仓库的 Actions Secrets 中配置 `STATE_ENCRYPTION_KEY`、`RUNNER_API_TOKEN`；在 Actions Variables 配置 `REALTIME_API_URL` 为 Worker 的 HTTPS 根地址，并按工作流要求启用定时任务。两处同名密钥必须一致。密钥通过机密设置保存，不放入普通变量。
+3. 在 GitHub 仓库的 Actions Secrets 中配置 `STATE_ENCRYPTION_KEY`、`RUNNER_API_TOKEN`；在 Actions Variables 配置 `REALTIME_API_URL` 为 Worker 的 HTTPS 根地址。验收后设置 `MONITOR_ENABLED=true`，开启每半小时一次的 GitHub 后备唤醒；Cloudflare 按机器人中设定的间隔安排检测。两处同名密钥必须一致。密钥通过机密设置保存，不放入普通变量。
 4. 部署 Worker 和实时版工作流后，先验证健康检查及认证、手动运行检测和群消息；调用受保护的 setup 接口生成群功能面板。确认目标群与现有 webhook 的归属，再进行 webhook 切换并验证命令、按钮和完整报告。setup 本身不会自动切换 webhook。切换时应保留尚未处理的消息；遇到异常先停止，不要反复重置状态。
 
 | 名称 | 放置位置 | 用途 |
