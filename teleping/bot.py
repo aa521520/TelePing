@@ -10,7 +10,7 @@ COMMANDS: list[dict[str, str]] = [
     {"command": "add", "description": "添加一个监控网址，下轮任务处理"},
     {"command": "addmany", "description": "批量添加网址，命令和列表放在同一条消息，下轮任务处理"},
     {"command": "list", "description": "查看监控网址列表，下轮任务回复"},
-    {"command": "delete", "description": "删除一个监控网址，下轮任务处理"},
+    {"command": "delete", "description": "删除网址，可批量每行一个，下轮任务处理"},
     {"command": "check", "description": "全部网址安排下轮任务检测，并非立即检测"},
     {"command": "checkone", "description": "单个网址安排下轮任务检测，并非立即检测"},
     {"command": "settings", "description": "查看检测设置，下轮任务回复"},
@@ -24,7 +24,7 @@ _INTERVALS = (30, 60, 120, 360, 720, 1440)
 _USAGE = {
     "add": "用法：/add 网址\n支持裸域名或完整 http/https 网址。",
     "addmany": "用法：在同一条消息中发送 /addmany，换行后每行一个网址。\n/addmany\nexample.test\nhttps://other.test/path",
-    "delete": "用法：/delete 网址",
+    "delete": "用法：/delete 网址；批量删除时在同一条消息中每行一个网址。",
     "checkone": "用法：/checkone 网址\n安排下轮任务临时检测，不自动加入长期监控。",
     "interval": "用法：/interval 分钟数\n可选：30、60、120、360、720、1440 分钟。",
 }
@@ -34,7 +34,7 @@ _HELP = """监控机器人使用说明
 /add 网址 — 添加一个监控网址
 /addmany — 命令和网址列表放在同一条消息，换行后每行一个网址
 /list — 查看全部监控网址
-/delete 网址 — 删除监控网址及其排队请求
+/delete 网址 — 删除监控网址及其排队请求；批量删除时每行一个网址
 /check — 全部监控网址安排下轮任务检测，并非立即检测
 /checkone 网址 — 单个网址安排下轮任务临时检测，并非立即检测；不会自动添加长期监控
 /settings — 查看检测设置
@@ -136,6 +136,22 @@ def handle_update(
             f"已添加 {len(additions)} 个网址，重复 {len(targets) - len(additions)} 个；当前共 {len(state['targets'])} 个。"
         ]
 
+    if command == "delete":
+        try:
+            targets = parse_targets(arguments)
+        except ValueError:
+            return ["网址格式无效，本批次未删除任何网址。请检查每行只放一个合法的 http/https 网址。"]
+        if not targets:
+            return [_USAGE["delete"]]
+        keys = ("targets", "pending_targets", "forced_targets")
+        existing = {item for key in keys for item in state.get(key, [])}
+        deleted = set(targets) & existing
+        if deleted:
+            for key in keys:
+                if key in state:
+                    state[key] = [item for item in state[key] if item not in deleted]
+        return [f"已删除 {len(deleted)} 条；未在清单或排队 {len(targets) - len(deleted)} 条；剩余 {len(state.get('targets', []))} 条。"]
+
     try:
         target = normalize_target(arguments)
     except ValueError:
@@ -145,13 +161,6 @@ def handle_update(
             return ["该网址已在监控列表中，无需重复添加。"]
         state.setdefault("targets", []).append(target)
         return [f"已添加 1 个监控网址；当前共 {len(state['targets'])} 个。"]
-    if command == "delete":
-        keys = ("targets", "pending_targets", "forced_targets")
-        if not any(target in state.get(key, []) for key in keys):
-            return ["该网址未在监控列表中。"]
-        for key in keys:
-            state[key] = [item for item in state.get(key, []) if item != target]
-        return ["已删除监控网址及其排队请求。"]
     if command == "checkone":
         forced = state.setdefault("forced_targets", [])
         if target not in forced:
