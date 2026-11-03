@@ -1,29 +1,37 @@
 # TelePing
 
-使用 GitHub Actions 批量检查网站能否完成跳转并打开页面，检测域名和 HTTPS 证书到期，并向指定 Telegram 群发送中文通知。
+TelePing 用来批量检查网站，并在指定 Telegram 群里发送中文报告。新版使用 Cloudflare 接收群内操作、保存加密状态和发送消息；GitHub Actions 负责启动浏览器进行批量检测。
 
-**程序可以公开，监控清单与凭据不公开。** 所有真实目标只来自 Secrets 或经过授权的群命令。清单、历史状态、待发送通知、群信息和各批结果均加密保存。公开日志只包含数量和固定错误码。
+**当前版本仍需完成部署与实际验收，本文介绍配置方式和预期功能，不代表已经在线运行成功。**
 
-## 机器人菜单
+## 群里怎么用
 
-所有命令都有中文菜单说明。因为机器人通过 Actions 定时收取指令，通常在下一次半小时任务运行时处理，可能受 GitHub 排队延迟影响；没有实时按钮响应。
+将机器人加入指定群后，由群主或管理员发送 `/menu` 打开功能面板。面板包括添加域名、批量添加、查看清单、删除域名、检测全部、检测单个、检测频率、状态和帮助。
 
-| 命令 | 功能 |
+点击功能按钮只是打开下一步，不会立即执行：
+
+- 添加、批量添加、删除和检测单个：按提示**回复机器人那条消息**填写网址；批量添加时每行一个。
+- 查看清单、检测全部、状态和帮助：再点一次“确认”，或点“取消”。
+- 检测频率：再选择 30、60、120、360、720 或 1440 分钟。
+
+提示仅供发起操作的人使用，10 分钟后失效；换人回复、过期或取消都不会完成操作。机器人尽快接收指令并回复，实际检测还要等待 GitHub 任务启动和运行，不能保证立即出结果。检测进行中再次提交的请求会排队处理。
+
+也可以直接在群里输入命令：
+
+| 命令 | 用途 |
 | --- | --- |
-| `/add 网址` | 添加一个长期监控网址 |
-| `/addmany` 后换行粘贴清单 | 在同一条消息中批量添加，每行一个网址 |
-| `/list` | 查看全部监控网址 |
-| `/delete 网址` | 删除网址，并取消其排队的检测请求 |
-| `/check` | 请求下一次自动任务检测全部网址，跳过通常检测间隔 |
-| `/checkone 网址` | 请求下一次自动任务临时检测单个网址，不自动加入清单 |
-| `/settings` | 查看设置和可选检测间隔 |
-| `/interval 60` | 修改检测间隔，单位为分钟 |
-| `/status` | 查看监控数量与运行状态 |
-| `/help` 或 `/start` | 查看完整中文说明 |
+| `/menu` | 打开功能面板 |
+| `/add 网址` | 添加长期监控网址 |
+| `/addmany` 加换行清单 | 批量添加；命令和网址放在同一条消息中，每行一个 |
+| `/list` | 查看监控清单 |
+| `/delete 网址` | 删除网址及其排队请求 |
+| `/check` | 安排检测全部网址 |
+| `/checkone 网址` | 临时检测一个网址，不自动加入清单 |
+| `/interval 60` | 设置检测间隔，数字为分钟 |
+| `/settings`、`/status` | 查看设置或状态 |
+| `/help`、`/start` | 查看帮助 |
 
-可选间隔：**30、60、120、360、720、1440 分钟**。无论检测间隔如何设置，收指令的任务仍每半小时启动。群里可使用 `/check@你的机器人用户名` 这种带机器人名称的命令。
-
-批量添加示例（请把命令和列表放在同一条消息里）：
+例如：
 
 ```text
 /addmany
@@ -31,56 +39,41 @@ example.com
 https://www.example.org/path
 ```
 
-仅指定群当前的**群主和管理员**可以使用任何命令，包括查看清单和帮助。每次处理命令时都向 Telegram 查询最新管理员身份；人员变动自动生效，查询失败时不执行操作。匿名管理员发言、其他群、其他机器人和普通成员均没有操作权限。
+只有指定群当前的**群主和管理员**可以操作。每次命令、按钮操作和完成输入时都会重新查询 Telegram 管理员名单；权限变动随之生效，查询失败时不执行。普通成员、其他群、私聊、匿名管理员身份和其他机器人不能操作。
 
-## 检测和通知
+## 检测与报告
 
-- 每次实际检测结束，群里收到一条数量、正常/异常/待确认/未检测、耗时的摘要。
-- 新异常、恢复、HTTPS 入口警告及临近到期的变化另附明细；持续相同问题不反复列出。
-- 真实 Chromium 跟随 HTTP、JS、meta 和延时跳转。默认单站最多 45 秒，最终正文显示后还需稳定观察 15 秒；加载页、验证页和超时不算正常。
-- 裸域名按 HTTP 入口检查，并另查入口 HTTPS。显式指定 HTTPS 时严格验证证书，不自动降级为 HTTP。
-- 每批 50 条、最多 6 批并行、每批最多同时打开 5 个页面，以 300 条为批量验收基准。超过一轮预算的目标会明确标成未检测，下轮优先补测。
-- 域名注册到期日期查询 RDAP，证书检查使用实际 HTTPS 主机和端口；每日缓存。到期提醒阈值为 30、14、7、3、1、0 天，无法查询则标为无法确认。
-- 只有明确成功才发送恢复提醒；未知或未检测不会清除之前的异常。
-- 本期没有 17CE 调用。普通检测来自 GitHub 云端，不代表国内电信、联通、移动三网实际体验。这里的测速是页面访问耗时。
+默认每 30 分钟安排一轮；实际开始时间可能受服务和 GitHub 排队影响。每轮结束发送“普通检测汇总”，包含总数、正常、异常、待确认、未检测和耗时；新异常、恢复、入口 HTTPS 问题及到期变化另附明细。同一问题持续存在时不反复提醒。未检测的目标会在后续优先补测；只有明确成功才报告恢复，未知结果不会被当成恢复。
 
-## 首次配置
+- 使用浏览器检查页面，跟随 HTTP、JavaScript、meta 等跳转。页面验证、超时或无法确认时不应直接视为正常。
+- 裸域名默认从 HTTP 入口检查，并另查入口 HTTPS；明确填写 HTTPS 的网址严格验证证书，不会为了通过检测而关闭验证或降级。入口 HTTPS 提醒与网页能否打开分别统计。
+- **域名到期**是域名注册期限，**证书到期**是 HTTPS 证书有效期，两者互不等同。按 30、14、7、3、1、0 天阈值提醒；查询不到时显示无法确认，不猜测日期。如果能确认 HTTPS 证书已过期但无法取得可信日期，会提示已过期及日期无法确认。
+- 普通检测来自 GitHub 云端节点，可能位于海外，不能代表中国大陆电信、联通、移动用户的访问体验。页面耗时也不是三网专业测速。本版本**不包含 17CE 检测**。
+- 默认每批 50 条，最多 6 批并行，每批最多同时打开 5 个页面。批次未完成时，报告会标出未检测数量。
 
-**机器人 Token 只填入 GitHub Secrets，不写进代码或普通变量。** 如果怀疑 Token 已泄露，应在 BotFather 更换。此机器人应专门供 TelePing 使用；程序发现已有 webhook 时会报冲突，不擅自删除原连接。
+## 配置准备
 
-在仓库的 Settings → Secrets and variables → Actions 中，配置以下 **Repository secrets**：
+以下为首次部署的最小清单；涉及账号、密钥和 webhook 切换，建议由熟悉 Cloudflare、GitHub 和 Telegram 的人员协助。先在测试群和测试网址验收，再切换正式群。不要把真实密钥、群号或监控清单写进公开代码、截图或聊天记录。
 
-| 名称 | 内容 |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | 机器人 Token |
-| `STATE_ENCRYPTION_KEY` | 随机 32 字节密钥的 Base64 编码；务必私下保存，丢失后无法读回历史清单 |
-| `BASIC_DOMAINS` | 首次导入清单，每行一个网址；以后通过群命令管理 |
-| `TELEGRAM_CHAT_ID` | 目标群 ID（负整数） |
+1. 准备 GitHub 仓库、Cloudflare Workers 和 SQLite Durable Object、Telegram 专用机器人及目标群。将机器人加入群，并确认群号及管理员身份。Cloudflare 免费计划支持 SQLite Durable Objects，但有用量限制，参见 [Cloudflare 官方限制](https://developers.cloudflare.com/durable-objects/platform/limits/)。
+2. 配置 Cloudflare Worker：绑定名为 `STATE` 的 Durable Object，并在 Worker 的机密设置中填写下表所需项；普通变量设置 `GITHUB_REPOSITORY`（仓库所有者/仓库名）、`WORKFLOW_FILE`（`monitor.yml`）及 `WORKFLOW_REF`（部署所用分支）。`BASIC_DOMAINS` 仅首次建立状态时导入，不会覆盖后续群内修改。
+3. 在 GitHub 仓库的 Actions Secrets 中配置 `STATE_ENCRYPTION_KEY`、`RUNNER_API_TOKEN`；在 Actions Variables 配置 `REALTIME_API_URL` 为 Worker 的 HTTPS 根地址，并按工作流要求启用定时任务。两处同名密钥必须一致。密钥通过机密设置保存，不放入普通变量。
+4. 部署 Worker 和实时版工作流后，先验证健康检查及认证、手动运行检测和群消息；调用受保护的 setup 接口生成群功能面板。确认目标群与现有 webhook 的归属，再进行 webhook 切换并验证命令、按钮和完整报告。setup 本身不会自动切换 webhook。切换时应保留尚未处理的消息；遇到异常先停止，不要反复重置状态。
 
-`BASIC_DOMAINS` **只在首次创建状态时导入**，不会覆盖机器人维护后的清单，也不会把已经删除的网址重新加回。单个 Secret 最多 48 KB，批量导入更多网址可分多条 `/addmany` 消息。请勿修改加密密钥来重置清单，认证失败会停止处理以保护历史数据。
+| 名称 | 放置位置 | 用途 |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Cloudflare 机密 | Telegram 机器人凭据 |
+| `TELEGRAM_CHAT_ID` | Cloudflare 机密 | 指定群 ID |
+| `BASIC_DOMAINS` | Cloudflare 机密 | 可选的首次清单，每行一个网址 |
+| `STATE_ENCRYPTION_KEY` | Cloudflare 机密及 GitHub Actions Secret | 相同的 32 字节密钥的 Base64 编码；安全备份，已有部署务必沿用原密钥 |
+| `WEBHOOK_SECRET` | Cloudflare 机密 | Telegram webhook 校验用独立随机密钥 |
+| `RUNNER_API_TOKEN` | Cloudflare 机密及 GitHub Actions Secret | GitHub 任务与 Worker 通信的独立随机密钥，两处相同 |
+| `GITHUB_DISPATCH_TOKEN` | Cloudflare 机密 | 细粒度 GitHub 令牌，只选本仓库，授予 Actions 读写权限以启动工作流 |
 
-先配置 Token 和加密密钥，将机器人加入目标群，由你本人发送 `/start@机器人用户名`。然后到 Actions → TelePing → Run workflow 选择 **setup**：
+`WEBHOOK_SECRET` 和 `RUNNER_API_TOKEN` 必须分别独立生成，不能共用。GitHub 官方说明启动工作流所需权限为 [Actions 仓库权限：write](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)。令牌过期或权限变化会影响任务启动；Cloudflare 和 GitHub 的额度、排队及网络状况也会影响可用性。
 
-1. 程序注册中文菜单。
-2. 收集机器人最近收到的群命令对应的群和用户标识，只上传加密的 `setup-private` 附件，保留一天，公开日志不显示群信息。
-3. 由协助配置者在本地解密，核对目标群，再填入群 ID。管理员名单直接从 Telegram 查询，不需要手工填写用户 ID。
+## 隐私与限制
 
-准备完成后手动运行 **run**，确认群内报告和清单正确。最后在同一设置页的 **Variables** 中添加 `MONITOR_ENABLED=true`，才开启定时检测；配置前定时任务不会运行。菜单在群中主要通过输入 `/` 显示命令提示，私聊可显示命令菜单按钮；未授权私聊不会读出监控清单。
+Cloudflare Durable Object 是实时模式下清单、历史、请求和待发送消息的权威存储；这些内容采用 AES-256-GCM 加密并验证完整性。GitHub 中间计划和结果附件也加密，浏览器不会继承机器人凭据或加密密钥。公开日志设计为只显示数量和固定错误码，不包含目标清单、消息正文或原始接口异常。
 
-定时任务安排在每小时第 7、37 分钟，避开整点高峰。GitHub 可能延迟或停用长期没有仓库活动的定时任务，不能保证准点或不间断运行。
-
-## 隐私与运行边界
-
-- 使用标准公开 Linux 运行器，不自动开通付费或大规格运行器。
-- 状态保存在 `teleping-state` 分支，使用 AES-256-GCM 加密和完整性认证。浏览器不会继承机器人 Token 或加密密钥等环境变量。
-- 临时计划和结果附件也加密；不上传截图、追踪、页面原文或明文诊断文件。
-- 不打印第三方接口原始异常，避免 Token 被包含在请求地址中。拉取请求的测试不接触运行 Secrets。
-- 网络中断可能导致 Telegram 已收到消息而发送方未确认，后续重试可能重复；报告包含轮次编号帮助识别。
-
-## 本地维护
-
-Python 3.12，安装 `requirements.lock` 后执行 `python -m pytest -q`。浏览器测试仅使用本地受控页面，不在测试代码中写入真实目标。
-
-本地生成加密密钥：`python -m teleping key`，只写入已被忽略的 `work/encryption-key.txt`，不会打印密钥。下载设置附件至 `work/setup.enc` 后，在本地提供 `STATE_ENCRYPTION_KEY` 环境变量，再运行 `python -m teleping decrypt-setup`；结果仅写入 `work/setup-private.json`，不要上传解密文件。
-
-资料：[GitHub Secrets](https://docs.github.com/en/actions/reference/security/secrets)、[公开仓库运行器计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions)、[定时任务限制](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)、[Telegram Bot API](https://core.telegram.org/bots/api)。
+请妥善保存加密密钥：丢失后无法读取原有加密数据，错误密钥也不能当作重置方式。服务中断或额度不足会影响处理；网络中断时 Telegram 可能已收到消息而发送方未得到确认，重试可能产生重复，可根据轮次编号核对。

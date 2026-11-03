@@ -10,3 +10,8 @@ dist/
 *.enc
 state.json
 secrets*
+.tools/
+.wrangler/
+**/.wrangler/
+**/.dev.vars*
+**/node_modules/
