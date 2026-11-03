@@ -74,6 +74,20 @@ def test_api_failure_carries_only_safe_method_and_numeric_status():
     assert "test-secret" not in error.value.safe_context
 
 
+def test_menu_error_classifies_scope_and_reason_without_private_identifiers():
+    from teleping.telegram import TelegramFailure
+
+    def handler(request):
+        return httpx.Response(400, json={"ok": False, "error_code": 400, "description": "Bad Request: chat not found private-group-canary"})
+
+    with pytest.raises(TelegramFailure) as error:
+        make_client(handler).call("setMyCommands", {"scope": {"type": "chat", "chat_id": -100123}})
+    assert "scope=chat" in error.value.safe_context
+    assert "reason=chat_not_found" in error.value.safe_context
+    assert "private-group-canary" not in error.value.safe_context
+    assert "-100123" not in error.value.safe_context
+
+
 def test_bot_api_payloads_and_menu_scopes():
     requests = []
 

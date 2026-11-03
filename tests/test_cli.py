@@ -78,3 +78,33 @@ def test_cli_prints_safe_numeric_api_context_without_raw_description(tmp_path, m
     monkeypatch.setattr(cli, "_setup", fail)
     assert cli.main(["setup", "--directory", str(tmp_path)]) == 1
     assert capsys.readouterr().err == "teleping_error: telegram_api_failed; method=getWebhookInfo; http=401; api=401\n"
+
+
+def test_remote_control_and_finish_use_no_legacy_services(tmp_path, monkeypatch, capsys):
+    key = generate_key()
+    monkeypatch.setenv('STATE_ENCRYPTION_KEY', key)
+    monkeypatch.setenv('REALTIME_API_URL', 'https://service.example')
+    monkeypatch.setenv('RUNNER_API_TOKEN', 'token-canary')
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    plan = {'run_id':'123-1', 'lease_token':'secret-lease', 'started':100, 'expected_targets':['private-canary'], 'batches':[['private-canary']]}
+    class Service:
+        def __init__(self, url, token, encryption_key):
+            assert (url, token, encryption_key) == ('https://service.example','token-canary',key)
+        def claim(self, run_id, force=False):
+            assert run_id == '123-1' and force is True
+            return plan
+    def fail():
+        raise AssertionError('legacy service called')
+    def finish(service, actual_plan, results, cache, *, now):
+        assert actual_plan == plan and results == [] and cache == {}
+        return 1, 0
+    monkeypatch.setattr(cli, 'RemoteService', Service)
+    monkeypatch.setattr(cli, 'finish_remote', finish)
+    monkeypatch.setattr(cli, '_services', fail)
+    assert cli.main(['control','--directory',str(tmp_path),'--run-id','123-1','--force']) == 0
+    assert decrypt((tmp_path/'plan.enc').read_bytes(),key,purpose='plan:123-1') == plan
+    assert cli.main(['finish','--directory',str(tmp_path),'--run-id','123-1']) == 0
+    output = capsys.readouterr()
+    assert 'private-canary' not in output.out + output.err
+    assert 'secret-lease' not in output.out + output.err
+    assert 'token-canary' not in output.out + output.err
