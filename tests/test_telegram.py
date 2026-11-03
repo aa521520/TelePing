@@ -61,6 +61,19 @@ def test_administrator_ids_propagates_safe_api_failure(capsys):
     assert capsys.readouterr() == ("", "")
 
 
+def test_api_failure_carries_only_safe_method_and_numeric_status():
+    from teleping.telegram import TelegramFailure
+
+    def handler(request):
+        return httpx.Response(401, json={"ok": False, "error_code": 401, "description": "test-secret private-group-canary"})
+
+    with pytest.raises(TelegramFailure) as error:
+        make_client(handler).call("getWebhookInfo")
+    assert str(error.value) == "telegram_api_failed"
+    assert error.value.safe_context == "method=getWebhookInfo; http=401; api=401"
+    assert "test-secret" not in error.value.safe_context
+
+
 def test_bot_api_payloads_and_menu_scopes():
     requests = []
 

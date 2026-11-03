@@ -66,3 +66,15 @@ def test_cli_keeps_fixed_external_error_codes_without_printing_urls(tmp_path, mo
     monkeypatch.setattr(cli, "_setup", fail)
     assert cli.main(["setup", "--directory", str(tmp_path)]) == 1
     assert capsys.readouterr().err == "teleping_error: telegram_unavailable\n"
+
+
+def test_cli_prints_safe_numeric_api_context_without_raw_description(tmp_path, monkeypatch, capsys):
+    from teleping.telegram import TelegramFailure
+    monkeypatch.setenv("STATE_ENCRYPTION_KEY", generate_key())
+
+    def fail(*args):
+        raise TelegramFailure("telegram_api_failed", method="getWebhookInfo", http_status=401, api_status=401)
+
+    monkeypatch.setattr(cli, "_setup", fail)
+    assert cli.main(["setup", "--directory", str(tmp_path)]) == 1
+    assert capsys.readouterr().err == "teleping_error: telegram_api_failed; method=getWebhookInfo; http=401; api=401\n"
