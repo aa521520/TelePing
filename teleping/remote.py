@@ -75,6 +75,11 @@ class RemoteService:
         except Exception:
             raise RuntimeError('realtime_payload_invalid') from None
 
+    def setup(self):
+        data = self._post('/api/setup', {})
+        if data.get('ok') is not True:
+            raise RuntimeError('realtime_payload_invalid')
+
     def claim(self, run_id, force=False):
         self._run_id(run_id)
         data = self._post('/api/claim', {'run_id': run_id, 'force': bool(force)})

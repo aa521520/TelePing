@@ -83,7 +83,12 @@ def main(argv=None) -> int:
             (directory / "setup-private.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             print("setup_details_written_to_private_work_directory")
         elif args.mode == "setup":
-            _setup(directory, key)
+            if os.environ.get("REALTIME_API_URL"):
+                RemoteService(_required("REALTIME_API_URL"), _required("RUNNER_API_TOKEN"), key).setup()
+                _output("setup_complete", "true")
+                print("setup_complete: realtime")
+            else:
+                _setup(directory, key)
         elif args.mode == "worker":
             plan = decrypt((directory / "plan.enc").read_bytes(), key, purpose=f"plan:{args.run_id}")
             if plan.get("run_id") != args.run_id or not 0 <= args.batch < len(plan["batches"]):
