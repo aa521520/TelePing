@@ -13,6 +13,18 @@ from collections.abc import Callable, Iterator
 import httpx
 
 
+class TelegramFailure(RuntimeError):
+    """Fixed error code plus allowlisted method and numeric status; never a URL or body."""
+
+    def __init__(self, code, *, method, http_status=0, api_status=0):
+        super().__init__(code)
+        allowed = {"getMe", "getWebhookInfo", "getUpdates", "getChatAdministrators", "setMyCommands", "setChatMenuButton", "sendMessage", "getMyCommands"}
+        method = method if method in allowed else "unknown"
+        http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else 0
+        api_status = api_status if type(api_status) is int and 100 <= api_status <= 599 else 0
+        self.safe_context = f"method={method}; http={http_status}; api={api_status}"
+
+
 def _chunks(text: str) -> Iterator[str]:
     """Keep Unicode characters intact within Telegram's UTF-16 size limit."""
     start = units = 0
@@ -58,13 +70,13 @@ class TelegramClient:
             try:
                 response = self.client.post(self._base + method, json=payload or {})
             except (httpx.HTTPError, httpx.InvalidURL):
-                raise RuntimeError("telegram_unavailable") from None
+                raise TelegramFailure("telegram_unavailable", method=method) from None
             try:
                 data = response.json()
             except ValueError:
-                raise RuntimeError("telegram_api_failed") from None
+                raise TelegramFailure("telegram_api_failed", method=method, http_status=response.status_code) from None
             if not isinstance(data, dict):
-                raise RuntimeError("telegram_api_failed") from None
+                raise TelegramFailure("telegram_api_failed", method=method, http_status=response.status_code) from None
             if response.status_code == 429 or data.get("error_code") == 429:
                 parameters = data.get("parameters")
                 delay = parameters.get("retry_after") if isinstance(parameters, dict) else None
@@ -81,7 +93,7 @@ class TelegramClient:
                 self.sleep(delay)
                 continue
             if response.status_code >= 400 or data.get("ok") is not True or "result" not in data:
-                raise RuntimeError("telegram_api_failed") from None
+                raise TelegramFailure("telegram_api_failed", method=method, http_status=response.status_code, api_status=data.get("error_code", 0)) from None
             return data["result"]
         raise RuntimeError("telegram_rate_limited") from None
 

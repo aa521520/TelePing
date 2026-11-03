@@ -14,7 +14,7 @@ from .crypto import decrypt, encrypt, generate_key
 from .jobs import process_batch
 from .runtime import control_round, finish_round
 from .state import GitHubStateStore
-from .telegram import TelegramClient
+from .telegram import TelegramClient, TelegramFailure
 
 
 def _required(name: str) -> str:
@@ -128,7 +128,8 @@ def main(argv=None) -> int:
         # Never interpolate exception text: HTTP libraries include access-bearing URLs.
         safe_codes = {"telegram_webhook_conflict", "telegram_unavailable", "telegram_api_failed", "telegram_rate_limited", "encrypted_data_invalid", "encryption_key_invalid", "github_state_conflict", "github_unavailable", "github_request_failed", "default_branch_missing", "state_branch_missing", "state_missing", "configuration_missing", "group_configuration_invalid"}
         code = str(error) if str(error) in safe_codes else "operation_failed"
-        print(f"teleping_error: {code}", file=sys.stderr)
+        context = "; " + error.safe_context if isinstance(error, TelegramFailure) and code != "operation_failed" else ""
+        print(f"teleping_error: {code}{context}", file=sys.stderr)
         return 1
 
 
