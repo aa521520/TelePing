@@ -108,3 +108,22 @@ def test_remote_control_and_finish_use_no_legacy_services(tmp_path, monkeypatch,
     assert 'private-canary' not in output.out + output.err
     assert 'secret-lease' not in output.out + output.err
     assert 'token-canary' not in output.out + output.err
+
+
+def test_realtime_setup_never_uses_legacy_telegram(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('STATE_ENCRYPTION_KEY', generate_key())
+    monkeypatch.setenv('REALTIME_API_URL', 'https://service.example')
+    monkeypatch.setenv('RUNNER_API_TOKEN', 'token-canary')
+    monkeypatch.delenv('TELEGRAM_BOT_TOKEN', raising=False)
+    class Service:
+        def __init__(self, url, token, key):
+            assert url == 'https://service.example' and token == 'token-canary'
+        def setup(self):
+            pass
+    def fail(*args):
+        raise AssertionError('legacy called')
+    monkeypatch.setattr(cli, 'RemoteService', Service)
+    monkeypatch.setattr(cli, '_setup', fail)
+    assert cli.main(['setup', '--directory', str(tmp_path)]) == 0
+    output = capsys.readouterr()
+    assert 'canary' not in output.out + output.err

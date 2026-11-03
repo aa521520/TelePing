@@ -103,3 +103,19 @@ def test_invalid_actions_run_ids_are_rejected_without_network(run_id):
     service = RemoteService('https://service.example', 'secret', generate_key(), httpx.Client(transport=httpx.MockTransport(handler)))
     with pytest.raises(ValueError, match='^run_id_invalid$'):
         service.claim(run_id)
+
+
+def test_setup_uses_authenticated_post_and_sanitizes_errors():
+    from teleping.remote import RemoteService
+    def handler(request):
+        assert request.url.path == '/api/setup'
+        assert request.headers['authorization'] == 'Bearer secret'
+        assert json.loads(request.content) == {}
+        return httpx.Response(200, json={'ok': True})
+    service = RemoteService('https://service.example', 'secret', generate_key(), httpx.Client(transport=httpx.MockTransport(handler)))
+    assert service.setup() is None
+    def fail(request):
+        raise RuntimeError('private-canary')
+    service = RemoteService('https://service.example', 'secret', generate_key(), httpx.Client(transport=httpx.MockTransport(fail)))
+    with pytest.raises(RuntimeError, match='^realtime_request_failed$'):
+        service.setup()
