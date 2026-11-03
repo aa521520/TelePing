@@ -31,7 +31,7 @@ example.com
 https://www.example.org/path
 ```
 
-仅指定群中、列入管理员清单的用户可以执行命令。匿名管理员发言、其他群、其他机器人和未授权用户均不会修改清单。
+仅指定群当前的**群主和管理员**可以使用任何命令，包括查看清单和帮助。每次处理命令时都向 Telegram 查询最新管理员身份；人员变动自动生效，查询失败时不执行操作。匿名管理员发言、其他群、其他机器人和普通成员均没有操作权限。
 
 ## 检测和通知
 
@@ -46,17 +46,16 @@ https://www.example.org/path
 
 ## 首次配置
 
-**已经分享过的 Token 请先在 BotFather 更换，新值直接填入 GitHub Secrets，不要写进聊天、代码或普通变量。** 此机器人应专门供 TelePing 使用；程序发现已有 webhook 时会报冲突，不擅自删除原连接。
+**机器人 Token 只填入 GitHub Secrets，不写进代码或普通变量。** 如果怀疑 Token 已泄露，应在 BotFather 更换。此机器人应专门供 TelePing 使用；程序发现已有 webhook 时会报冲突，不擅自删除原连接。
 
 在仓库的 Settings → Secrets and variables → Actions 中，配置以下 **Repository secrets**：
 
 | 名称 | 内容 |
 | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | 更换后的机器人 Token |
+| `TELEGRAM_BOT_TOKEN` | 机器人 Token |
 | `STATE_ENCRYPTION_KEY` | 随机 32 字节密钥的 Base64 编码；务必私下保存，丢失后无法读回历史清单 |
 | `BASIC_DOMAINS` | 首次导入清单，每行一个网址；以后通过群命令管理 |
 | `TELEGRAM_CHAT_ID` | 目标群 ID（负整数） |
-| `TELEGRAM_ADMIN_IDS` | 允许操作的用户数字 ID，多人用逗号分隔 |
 
 `BASIC_DOMAINS` **只在首次创建状态时导入**，不会覆盖机器人维护后的清单，也不会把已经删除的网址重新加回。单个 Secret 最多 48 KB，批量导入更多网址可分多条 `/addmany` 消息。请勿修改加密密钥来重置清单，认证失败会停止处理以保护历史数据。
 
@@ -64,7 +63,7 @@ https://www.example.org/path
 
 1. 程序注册中文菜单。
 2. 收集机器人最近收到的群命令对应的群和用户标识，只上传加密的 `setup-private` 附件，保留一天，公开日志不显示群信息。
-3. 由协助配置者在本地解密，核对目标群和管理员，再填入群 ID 和管理员 ID 两个 Secrets。
+3. 由协助配置者在本地解密，核对目标群，再填入群 ID。管理员名单直接从 Telegram 查询，不需要手工填写用户 ID。
 
 准备完成后手动运行 **run**，确认群内报告和清单正确。最后在同一设置页的 **Variables** 中添加 `MONITOR_ENABLED=true`，才开启定时检测；配置前定时任务不会运行。菜单在群中主要通过输入 `/` 显示命令提示，私聊可显示命令菜单按钮；未授权私聊不会读出监控清单。
 
