@@ -106,8 +106,6 @@ def complete_round(
             site.pop("confirmed_reason", None)
         entry_https = result.get("entry_https")
         if entry_https == "failed":
-            if not site.get("entry_https_warning"):
-                details.append(f"入口 HTTPS 提醒：{target}\n入口 HTTP 检测与 HTTPS 提醒分别统计。")
             site["entry_https_warning"] = True
         elif entry_https == "ok":
             site["entry_https_warning"] = False
