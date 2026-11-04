@@ -1,4 +1,4 @@
-"""Build private round reports and retain transition history without I/O."""
+"""List current private warnings every round and retain transition history without I/O."""
 
 from __future__ import annotations
 
@@ -23,7 +23,23 @@ def _expiry_resources(expiry: dict):
             yield "certificate:" + item["host"], "HTTPS 证书 " + item["host"], item
 
 
-def _expiry_changes(site: dict, expiry: dict, target: str) -> list[str]:
+def _remaining_days(value: dict, now: float) -> int | float | None:
+    date = value.get("expires_at")
+    if date is not None:
+        try:
+            expires = datetime.fromisoformat(date)
+            if expires.tzinfo is None:
+                return None
+            return math.floor((expires.timestamp() - now) / 86400)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+    days = value.get("days")
+    if isinstance(days, bool) or not isinstance(days, (int, float)) or not math.isfinite(days):
+        return None
+    return days
+
+
+def _expiry_details(site: dict, expiry: dict, target: str, now: float) -> list[str]:
     thresholds = site.setdefault("expiry_thresholds", {})
     known = site.setdefault("expiry_known", {})
     # An updated redirect route may no longer use a previously seen certificate.
@@ -31,26 +47,19 @@ def _expiry_changes(site: dict, expiry: dict, target: str) -> list[str]:
         known[key] = False
     details = []
     for key, label, value in _expiry_resources(expiry):
-        days = value.get("days")
+        if value.get("status") not in {"ok", "expired"}:
+            continue
+        days = _remaining_days(value, now)
         if key.startswith("certificate:") and value.get("status") == "expired" and days is None:
             known[key] = True
-            previous = thresholds.get(key)
-            if previous is None or previous > 0:
-                details.append(f"到期提醒：{target}\n{label}：证书已过期，具体日期无法确认")
+            details.append(f"到期提醒：{target}\n{label}：证书已过期，具体日期无法确认")
             thresholds[key] = 0
             continue
-        if (
-            value.get("status") not in {"ok", "expired"}
-            or isinstance(days, bool)
-            or not isinstance(days, (int, float))
-            or not math.isfinite(days)
-        ):
-            known[key] = False
+        if days is None:
             continue
         threshold = next((limit for limit in _THRESHOLDS if days <= limit), None)
         known[key] = threshold is not None
-        previous = thresholds.get(key)
-        if threshold is not None and (previous is None or threshold < previous):
+        if threshold is not None:
             remaining = f"已到期 {abs(days):g} 天" if days < 0 else f"剩余 {days:g} 天"
             details.append(f"到期提醒：{target}\n{label}：{remaining}（{threshold} 天提醒阈值）")
         thresholds[key] = threshold
@@ -93,8 +102,9 @@ def complete_round(
             if isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= 0:
                 timings.append(elapsed)
         if status == "failed":
-            if confirmed != "failed" or site.get("confirmed_reason") != reason:
-                details.append(f"新增异常：{target}\n原因：{reason}")
+            changed = confirmed != "failed" or site.get("confirmed_reason") != reason
+            details.append(f"{'新增异常' if changed else '持续异常'}：{target}\n原因：{reason}")
+            if changed:
                 new_failures += 1
             site["confirmed_status"] = "failed"
             site["confirmed_reason"] = reason
@@ -104,15 +114,21 @@ def complete_round(
                 recovered += 1
             site["confirmed_status"] = "ok"
             site.pop("confirmed_reason", None)
+        elif confirmed == "failed":
+            current = "未检测" if status == "unmeasured" else "待确认"
+            details.append(
+                f"异常待确认：{target}\n上次确认异常：{site.get('confirmed_reason', '未知')}；"
+                f"本轮{current}，尚未确认恢复。"
+            )
         entry_https = result.get("entry_https")
         if entry_https == "failed":
             site["entry_https_warning"] = True
         elif entry_https == "ok":
             site["entry_https_warning"] = False
         expiry = result.get("expiry")
-        if isinstance(expiry, dict):
-            details.extend(_expiry_changes(site, expiry, target))
-        if any(site.get("expiry_known", {}).values()):
+        warnings = _expiry_details(site, expiry if isinstance(expiry, dict) else {}, target, now)
+        details.extend(warnings)
+        if warnings:
             expiry_warnings += 1
         site.update({"last_status": status, "last_reason": reason, "last_checked_at": now})
     # A temporary /checkone round must not discard other queued missing work.
