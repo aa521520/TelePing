@@ -1,0 +1,44 @@
+name: TelePing 17CE
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'run 处理已确认的检测；setup 更新群功能面板'
+        type: choice
+        options: [run, setup]
+        default: run
+
+permissions: {}
+
+concurrency:
+  group: teleping-17ce
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name == 'workflow_dispatch' || vars.SEVENTEEN_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Process private 17CE work
+        env:
+          SEVENTEEN_API_URL: ${{ vars.SEVENTEEN_API_URL }}
+          SEVENTEEN_RUNNER_API_TOKEN: ${{ secrets.SEVENTEEN_RUNNER_API_TOKEN }}
+          SEVENTEEN_STATE_ENCRYPTION_KEY: ${{ secrets.SEVENTEEN_STATE_ENCRYPTION_KEY }}
+          ROUND_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          RUN_MODE: ${{ inputs.mode || 'run' }}
+        run: node scripts/seventeence-runner.mjs "$RUN_MODE"
