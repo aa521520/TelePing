@@ -1,4 +1,4 @@
-import {operatorName,channelText} from './report.mjs';
+import {recordRound,publishRound,pruneRounds} from './rounds.mjs';
 import {encrypt,decrypt,chunks} from '../cloudflare/core.mjs';
 export const id=()=>crypto.randomUUID();
 export const seconds=()=>Date.now()/1000;
@@ -7,9 +7,38 @@ export const validRun=x=>typeof x==='string'&&/^[1-9][0-9]{0,29}-[1-9][0-9]{0,9}
 export function order(a,b){let [x,y]=a.split('-').map(BigInt),[z,w]=b.split('-').map(BigInt);return x<z?-1:x>z?1:y<w?-1:y>w?1:0}
 export function initial(env){return {chat_id:env.TELEGRAM_CHAT_ID,targets:[],generations:{},profile:{test_type:'HTTP',operators:[1,2,7],area:1,provinces:[],cities:[],node_type:1,nodes_per_region:1},interval_minutes:1440,budget:null,daily_enabled:false,daily_preference:true,last_daily:0,credentials:null,config_version:0,jobs:[],history:[],sessions:{},private_sessions:{},seen:[],inbox:[],outbox:[],receipts:{},lease:null,next_send:0,dispatch:null}}
 export function ready(s){return !!(s.credentials?.username&&s.credentials?.api_token&&!s.auth_blocked)}
-export function footer(s){return `\n\n累计费用：暂不可查询｜余额：${s.credentials?'暂不可查询':'未配置'}`}
-export function queue(s,text,{chat=s.chat_id,markup,priority=false,session,nonce,parse_mode}={}){let foot=footer(s),limit=3500-foot.length;let parts=[];while(text.length>limit){let n=limit;if(/[\uD800-\uDBFF]/.test(text[n-1]))n--;parts.push(text.slice(0,n));text=text.slice(n)}if(text)parts.push(text);let entries=parts.map(text=>({text:text+foot,chat,markup,session,nonce,parse_mode}));if(priority)s.outbox.unshift(...entries);else s.outbox.push(...entries)}
-export function finishLease(s){if(!s.lease)return;for(let job of s.jobs){if(job.lease!==s.lease.run_id)continue;if(job.status==='claimed'){job.status='queued';delete job.lease}else if(job.status==='begun'){job.status='uncertain';s.history.push({id:job.id,status:'uncertain',task_id:job.task_id||null});queue(s,`检测网址：${job.cancelled?'已删除':job.target}\n检测提交状态待确认，请核对供应商记录${job.task_id?'（任务号：'+job.task_id+'）':''}；不会自动重复提交。`)}}s.jobs=s.jobs.filter(j=>!['uncertain','terminal','cancelled'].includes(j.status));s.history=s.history.slice(-200);s.receipts[s.lease.run_id]={executor_id:s.lease.executor_id,lease_token:s.lease.lease_token};while(Object.keys(s.receipts).length>64)delete s.receipts[Object.keys(s.receipts)[0]];s.lease=null}
+export function queue(s,text,{chat=s.chat_id,markup,priority=false,session,nonce,parse_mode}={}) {
+  const entries=chunks(text).map(text=>({text,chat,markup,session,nonce,parse_mode}));
+  if(priority)s.outbox.unshift(...entries);else s.outbox.push(...entries);
+}
+export function cancelUnstarted(s,job) {
+  if(job.status==='begun'){job.cancelled=true;return}
+  if(job.status==='terminal'||job.status==='uncertain'||job.status==='cancelled')return;
+  recordRound(s,job,{status:'cancelled',submitted:false,node_count:0});
+  job.status='cancelled';
+  publishRound(s,job.round_id,queue);
+}
+export function finishLease(s) {
+  if(!s.lease)return;
+  const touched=new Set();
+  for(const job of s.jobs) {
+    if(job.lease!==s.lease.run_id)continue;
+    touched.add(job.round_id);
+    if(job.status==='claimed'){job.status='queued';delete job.lease}
+    else if(job.status==='begun') {
+      recordRound(s,job,{status:'uncertain',node_count:null,allocated_node_count:job.allocated_node_count,submitted:job.submitted});
+      job.status='uncertain';
+      s.history.push({id:job.id,status:'uncertain',task_id:job.task_id||null});
+    }
+  }
+  s.jobs=s.jobs.filter(j=>!['uncertain','terminal','cancelled'].includes(j.status));
+  s.history=s.history.slice(-200);
+  s.receipts[s.lease.run_id]={executor_id:s.lease.executor_id,lease_token:s.lease.lease_token};
+  while(Object.keys(s.receipts).length>64)delete s.receipts[Object.keys(s.receipts)[0]];
+  s.lease=null;
+  for(const roundId of touched)publishRound(s,roundId,queue);
+  pruneRounds(s);
+}
 export function jobValid(s,j){return !j.cancelled&&(!j.managed||s.generations[j.target]===j.generation)}
 export async function runner(service,path,b,s){let run=b.run_id;if(!validRun(run))return json({ok:false},400);let lease=s.lease;
  if(path==='/api/claim'){
@@ -32,9 +61,15 @@ export async function runner(service,path,b,s){let run=b.run_id;if(!validRun(run
   if(d.run_id!==run||d.executor_id!==lease.executor_id||d.lease_token!==lease.lease_token||!['accepted','terminal'].includes(d.kind)||d.event_id!==`${d.job_id}:${d.kind}`)return json({ok:false},409);
   let job=s.jobs.find(j=>j.id===d.job_id&&j.lease===run);if(!job)return json({ok:false},409);
   if(job.events?.includes(d.kind)||(job.status==='terminal'&&d.kind==='accepted'))return json({ok:true,duplicate:true});if(job.status!=='begun'&&!(d.kind==='terminal'&&job.status==='claimed'&&['provider_auth_failed','provider_connect_failed','begin_unavailable','configuration_invalid'].includes(d.result?.error_code)))return json({ok:false},409);
-  let r=d.result;if(!r||typeof r!=='object')return json({ok:false},400);
-  if(d.kind==='accepted'){if(typeof r.task_id!=='string'||r.task_id.length>200||/[\x00-\x1f\x7f]/.test(r.task_id))return json({ok:false},400);job.task_id=r.task_id}
-  else {if(r.task_id!==undefined&&(typeof r.task_id!=='string'||r.task_id.length>200||/[\x00-\x1f\x7f]/.test(r.task_id)))return json({ok:false},400);if(r.task_id)job.task_id=r.task_id;if(!['complete','failed','uncertain','blocked'].includes(r.status))return json({ok:false},400);for(let k of ['node_count','success_count','failure_count'])if(!Number.isSafeInteger(r[k])||r[k]<0||r[k]>10000)return json({ok:false},400);if(r.error_code&&!['provider_auth_failed','provider_connect_failed','begin_unavailable','provider_disconnected','provider_timeout','provider_task_failed','no_results','configuration_invalid'].includes(r.error_code))return json({ok:false},400);if(!r.operators||typeof r.operators!=='object'||Array.isArray(r.operators)||Object.keys(r.operators).length>100)return json({ok:false},400);for(let [key,v] of Object.entries(r.operators)){if(!/^(?:[0-9]{1,6}|unknown)$/.test(key)||!v||typeof v!=='object')return json({ok:false},400);for(let k of ['node_count','success_count','failure_count'])if(!Number.isSafeInteger(v[k])||v[k]<0||v[k]>10000)return json({ok:false},400);for(let k of ['avg_seconds','max_seconds'])if(v[k]!==null&&(typeof v[k]!=='number'||!Number.isFinite(v[k])||v[k]<0))return json({ok:false},400)}r.operators=Object.fromEntries(Object.entries(r.operators).map(([k,v])=>[k,{node_count:v.node_count,success_count:v.success_count,failure_count:v.failure_count,avg_seconds:v.avg_seconds,max_seconds:v.max_seconds}]));if(r.error_code==='provider_auth_failed'&&job.config_version===s.config_version){s.auth_blocked=true;s.daily_enabled=false;s.dispatch=null}job.status='terminal';s.history.push({id:job.id,status:r.status,task_id:job.task_id||null,node_count:r.node_count,success_count:r.success_count,failure_count:r.failure_count,operators:r.operators,...(r.error_code?{error_code:r.error_code}:{})});s.history=s.history.slice(-200);let reasons={provider_auth_failed:'账号认证未通过，请核对配置',provider_connect_failed:'连接未建立，本次未提交检测',begin_unavailable:'开始授权未确认，本次未提交检测',provider_disconnected:'提交后连接中断，费用状态待核对',provider_timeout:'检测超时，费用状态待核对',provider_task_failed:'供应商返回任务失败',no_results:'没有收到节点结果',configuration_invalid:'检测配置无效'};let lines=Object.entries(r.operators).map(([k,v])=>`运营商 ${operatorName(k)}：节点 ${v.node_count}，成功 ${v.success_count}，失败 ${v.failure_count}，平均 ${v.avg_seconds===null?'暂无':v.avg_seconds+' 秒'}，最慢 ${v.max_seconds===null?'暂无':v.max_seconds+' 秒'}`);queue(s,`检测网址：${job.cancelled?'已删除':job.target}\n${channelText(job.profile)}\n状态：${({complete:'完成',failed:'失败',uncertain:'待确认',blocked:'未启动'})[r.status]}${r.error_code?'（'+reasons[r.error_code]+'）':''}，节点 ${r.node_count}，成功 ${r.success_count}，失败 ${r.failure_count}。\n${lines.join('\n')}\n实际费用待供应商账单确认。`)}
+  let r=d.result;if(!r||typeof r!=='object')return json({ok:false},400);if(r.submitted!==undefined&&typeof r.submitted!=='boolean')return json({ok:false},400);if(r.allocated_node_count!==undefined&&r.allocated_node_count!==null&&(!Number.isSafeInteger(r.allocated_node_count)||r.allocated_node_count<0||r.allocated_node_count>10000))return json({ok:false},400);
+  if(d.kind==='accepted'){if(typeof r.task_id!=='string'||r.task_id.length>200||/[\x00-\x1f\x7f]/.test(r.task_id))return json({ok:false},400);job.task_id=r.task_id;if(r.allocated_node_count!==undefined)job.allocated_node_count=r.allocated_node_count;if(r.submitted!==undefined)job.submitted=r.submitted}
+  else {if(r.task_id!==undefined&&(typeof r.task_id!=='string'||r.task_id.length>200||/[\x00-\x1f\x7f]/.test(r.task_id)))return json({ok:false},400);if(r.task_id)job.task_id=r.task_id;if(!['complete','failed','uncertain','blocked'].includes(r.status))return json({ok:false},400);for(let k of ['node_count','success_count','failure_count'])if(!Number.isSafeInteger(r[k])||r[k]<0||r[k]>10000)return json({ok:false},400);if(r.error_code&&!['provider_auth_failed','provider_connect_failed','begin_unavailable','provider_disconnected','provider_timeout','provider_task_failed','provider_result_incomplete','no_results','configuration_invalid'].includes(r.error_code))return json({ok:false},400);if(!r.operators||typeof r.operators!=='object'||Array.isArray(r.operators)||Object.keys(r.operators).length>100)return json({ok:false},400);for(let [key,v] of Object.entries(r.operators)){if(!/^(?:[0-9]{1,6}|unknown)$/.test(key)||!v||typeof v!=='object')return json({ok:false},400);for(let k of ['node_count','success_count','failure_count'])if(!Number.isSafeInteger(v[k])||v[k]<0||v[k]>10000)return json({ok:false},400);for(let k of ['avg_seconds','max_seconds'])if(v[k]!==null&&(typeof v[k]!=='number'||!Number.isFinite(v[k])||v[k]<0))return json({ok:false},400)}r.operators=Object.fromEntries(Object.entries(r.operators).map(([k,v])=>[k,{node_count:v.node_count,success_count:v.success_count,failure_count:v.failure_count,avg_seconds:v.avg_seconds,max_seconds:v.max_seconds}]));if(r.error_code==='provider_auth_failed'&&job.config_version===s.config_version){s.auth_blocked=true;s.daily_enabled=false;s.dispatch=null}recordRound(s,job,r);
+    job.status='terminal';
+    s.history.push({id:job.id,status:r.status,task_id:job.task_id||null,node_count:r.node_count,success_count:r.success_count,failure_count:r.failure_count,operators:r.operators,...(r.error_code?{error_code:r.error_code}:{})});
+    s.history=s.history.slice(-200);
+    if(r.error_code==='provider_auth_failed'&&job.config_version===s.config_version)publishRound(s,job.round_id,queue,{partial:true});
+    publishRound(s,job.round_id,queue);
+  }
   (job.events||=[]).push(d.kind);await service.save(s);return json({ok:true});
  }
  if(b.executor_id!==lease.executor_id||b.lease_token!==lease.lease_token)return path==='/api/begin'?json({permit:false}):json({ok:false},409);
