@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -52,6 +53,85 @@ def test_finish_recomputes_after_conflict_and_excludes_cancelled_targets():
     assert commits[1]['summary']['unmeasured'] == 1
     assert commits[1]['expiry_cache_updates'] == {'temp': {'x':2}}
     assert 'targets' not in commits[1]
+
+
+def test_finish_commits_encrypted_persistent_failure_and_current_expiry_details(capsys):
+    from teleping.remote import RemoteService, finish_remote
+
+    key = generate_key()
+    target = 'https://persistent.example.test'
+    now = datetime(2026, 11, 4, 12, tzinfo=UTC)
+    plan = {'run_id': '124-1', 'lease_token': 'lease', 'expected_targets': [target]}
+    context = {
+        'run_id': plan['run_id'],
+        'lease_token': plan['lease_token'],
+        'revision': 9,
+        'started': now.timestamp() - 60,
+        'expected_targets': [target],
+        'state': {
+            'targets': [target],
+            'pending_targets': [],
+            'site_states': {
+                target: {
+                    'confirmed_status': 'failed',
+                    'confirmed_reason': 'navigation_failed',
+                    'expiry_thresholds': {'domain': 7},
+                    'expiry_known': {'domain': True},
+                },
+            },
+        },
+    }
+    commits = []
+
+    def handler(request):
+        assert request.headers['authorization'] == 'Bearer secret-canary'
+        body = json.loads(request.content)
+        if request.url.path == '/api/context':
+            assert body == {'run_id': plan['run_id'], 'lease_token': plan['lease_token']}
+            return httpx.Response(200, json={
+                'payload': encrypt(context, key, purpose='context:124-1').decode(),
+            })
+        assert request.url.path == '/api/commit'
+        assert set(body) == {'run_id', 'payload'}
+        assert body['run_id'] == plan['run_id']
+        assert target.encode() not in request.content
+        commits.append(decrypt(body['payload'].encode(), key, purpose='commit:124-1'))
+        return httpx.Response(200, json={'ok': True})
+
+    service = RemoteService(
+        'https://service.example', 'secret-canary', key,
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    results = [{
+        'target': target,
+        'status': 'failed',
+        'reason': 'navigation_failed',
+        'expiry': {
+            'domain': {
+                'status': 'ok',
+                'days': 7,
+                'expires_at': (now + timedelta(days=6)).isoformat(),
+            },
+            'certificates': [],
+        },
+    }]
+
+    assert finish_remote(service, plan, results, {}, now=now.timestamp()) == (1, 1)
+    assert len(commits) == 1
+    payload = commits[0]
+    assert payload['revision'] == 9
+    assert payload['summary']['failed'] == 1
+    assert payload['summary']['new_failures'] == 0
+    assert payload['summary']['recovered'] == 0
+    assert payload['summary']['expiry_warnings'] == 1
+    assert len(payload['messages']) == 2
+    details = payload['messages'][1]
+    assert f'持续异常：{target}' in details
+    assert f'到期提醒：{target}' in details
+    assert '域名：剩余 6 天' in details
+    assert '新增异常' not in details and '恢复正常' not in details
+    assert payload['site_states'][target]['confirmed_status'] == 'failed'
+    assert capsys.readouterr() == ('', '')
 
 
 def test_conflict_retry_is_bounded_and_other_errors_are_sanitized():

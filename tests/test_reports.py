@@ -1,4 +1,7 @@
 from copy import deepcopy
+from datetime import UTC, datetime
+
+_NOW = 1_730_000_010
 
 
 def result(target="http://example.test", status="ok", **extra):
@@ -16,7 +19,7 @@ def result(target="http://example.test", status="ok", **extra):
     }
 
 
-def finish(state, results, expected=None, round_id="round-1"):
+def finish(state, results, expected=None, round_id="round-1", now=_NOW):
     from teleping.reports import complete_round
 
     return complete_round(
@@ -24,7 +27,7 @@ def finish(state, results, expected=None, round_id="round-1"):
         results,
         expected_targets=expected if expected is not None else ["http://example.test"],
         started=1_730_000_000,
-        now=1_730_000_010,
+        now=now,
         round_id=round_id,
     )
 
@@ -83,9 +86,14 @@ def test_300_results_and_missing_batch_statistics():
 def test_unknown_does_not_recover_confirmed_failure_and_recovery_once():
     state = {}
     assert len(finish(state, [result(status="failed")])) == 2
-    assert len(finish(state, [result(status="failed")])) == 1
+    repeated = finish(state, [result(status="failed")])
+    assert len(repeated) == 2 and "持续异常：http://example.test" in repeated[1]
+    assert state["last_summary"]["new_failures"] == 0
     for status in ("unconfirmed", "unmeasured"):
-        assert not any("恢复正常" in m for m in finish(state, [result(status=status)]))
+        pending = finish(state, [result(status=status)])
+        assert not any("恢复正常" in m for m in pending)
+        assert "异常待确认：http://example.test" in pending[1]
+        assert "上次确认异常" in pending[1]
     recovered = finish(state, [result()])
     assert state["last_summary"]["recovered"] == 1
     assert len(recovered) == 2 and "恢复正常" in recovered[1]
@@ -119,32 +127,32 @@ def expiry(days, *, status="ok"):
         "domain": {
             "status": status,
             "days": days,
-            "expires_at": "2026-12-01T00:00:00Z" if days is not None else None,
+            "expires_at": datetime.fromtimestamp(_NOW + days * 86400, UTC).isoformat() if days is not None else None,
         },
         "certificates": [],
     }
 
 
-def test_expiry_threshold_crossings_unknowns_and_renewal():
+def test_expiry_warning_is_listed_every_round_until_renewal():
     state = {}
     for days, details in [
         (31, 0),
         (30, 1),
-        (29, 0),
+        (29, 1),
         (14, 1),
-        (13, 0),
+        (13, 1),
         (7, 1),
         (3, 1),
         (1, 1),
         (0, 1),
-        (-1, 0),
+        (-1, 1),
     ]:
         messages = finish(state, [result(expiry=expiry(days))])
         assert len(messages) == 1 + details
         assert state["last_summary"]["expiry_warnings"] == (0 if days > 30 else 1)
     assert len(finish(state, [result(expiry=expiry(None, status="unknown"))])) == 1
     assert state["last_summary"]["expiry_warnings"] == 0
-    assert len(finish(state, [result(expiry=expiry(-2))])) == 1
+    assert len(finish(state, [result(expiry=expiry(-2))])) == 2
     assert len(finish(state, [result(expiry=expiry(365))])) == 1
     assert len(finish(state, [result(expiry=expiry(30))])) == 2
 
@@ -188,7 +196,7 @@ def test_unknown_expiry_keeps_prior_threshold_for_next_known_result():
     assert site["expiry_thresholds"]["domain"] == 7
     finish(state, [result(expiry=expiry(None, status="unknown"))])
     assert site["expiry_thresholds"]["domain"] == 7
-    assert len(finish(state, [result(expiry=expiry(6))])) == 1
+    assert len(finish(state, [result(expiry=expiry(6))])) == 2
     assert len(finish(state, [result(expiry=expiry(3))])) == 2
 
 
@@ -200,6 +208,9 @@ def test_300_failures_all_appear_in_details():
     assert state["last_summary"]["new_failures"] == 300
     assert len(messages) == 2
     assert all(target in messages[1] for target in targets)
+    repeated = finish(state, [result(target, status="failed") for target in targets], targets, round_id="next")
+    assert state["last_summary"]["new_failures"] == 0
+    assert len(repeated) == 2 and all(target in repeated[1] for target in targets)
 
 
 def test_300_failures_batch_into_two_logical_messages_and_few_telegram_chunks():
@@ -230,7 +241,7 @@ def test_300_failures_batch_into_two_logical_messages_and_few_telegram_chunks():
     assert "".join(sent) == "".join(messages)
 
 
-def test_expired_certificate_without_date_is_alerted_once_until_verified_renewal():
+def test_expired_certificate_without_date_is_listed_every_round_until_verified_renewal():
     state = {}
 
     def cert(status, days):
@@ -243,9 +254,37 @@ def test_expired_certificate_without_date_is_alerted_once_until_verified_renewal
     assert len(messages) == 2
     assert "证书已过期，具体日期无法确认" in messages[1]
     assert state["last_summary"]["expiry_warnings"] == 1
-    assert len(finish(state, [result(expiry=cert("expired", None))])) == 1
+    assert len(finish(state, [result(expiry=cert("expired", None))])) == 2
     finish(state, [result(expiry=cert("unknown", None))])
-    assert len(finish(state, [result(expiry=cert("expired", None))])) == 1
+    assert len(finish(state, [result(expiry=cert("expired", None))])) == 2
     finish(state, [result(expiry=cert("ok", 365))])
     assert state["last_summary"]["expiry_warnings"] == 0
     assert len(finish(state, [result(expiry=cert("expired", None))])) == 2
+
+
+def test_changed_failure_reason_is_new_but_unchanged_failure_still_has_details():
+    state = {}
+    for reason, new_count in [("TIMEOUT", 1), ("TIMEOUT", 0), ("HTTP_500", 1), ("HTTP_500", 0)]:
+        messages = finish(state, [result(status="failed", reason=reason)])
+        assert len(messages) == 2 and reason in messages[1]
+        assert state["last_summary"]["new_failures"] == new_count
+
+
+def test_current_expiry_counts_do_not_keep_missing_or_unknown_previous_warnings():
+    for current in [result(), result(expiry={}), result(expiry=expiry(None, status="unknown")), result(status="unmeasured")]:
+        state = {}
+        finish(state, [result(expiry=expiry(7))])
+        messages = finish(state, [current])
+        assert state["last_summary"]["expiry_warnings"] == 0
+        assert not any("到期提醒：" in message for message in messages[1:])
+
+
+def test_cached_expiry_date_is_recomputed_at_report_time_without_mutating_result():
+    state = {}
+    cached = expiry(1)
+    messages = finish(state, [result(expiry=cached)], now=_NOW + 2 * 86400)
+    assert "已到期 1 天" in messages[1]
+    assert cached["domain"]["days"] == 1
+    unknown = deepcopy(cached)
+    unknown["domain"]["status"] = "unknown"
+    assert len(finish(state, [result(expiry=unknown)], now=_NOW + 2 * 86400)) == 1
