@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta, timezone
 
-_THRESHOLDS = (0, 1, 3, 7, 14, 30)
+_THRESHOLDS = (0, 1, 3, 7, 14, 15)
 _BEIJING = timezone(timedelta(hours=8))
 
 
