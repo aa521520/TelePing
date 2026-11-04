@@ -47,7 +47,7 @@ async function queueTemporary(object) {
 
 const completed = {
   status: 'complete', task_id: 'task-1', node_count: 1, success_count: 1,
-  failure_count: 0,
+  failure_count: 0, allocated_node_count: 1, submitted: true,
   operators: {'1': {node_count: 1, success_count: 1, failure_count: 0,
     avg_seconds: 0.2, max_seconds: 0.2}},
 };
@@ -68,7 +68,7 @@ test('encrypted runner/controller round is idempotent and preserves independent 
     assert.equal(credentials.api_token, 'PRIVATE_API_CANARY');
     assert.equal(await hooks.begin(), true);
     submissions++;
-    await hooks.accepted({task_id: 'task-1'});
+    await hooks.accepted({task_id: 'task-1', allocated_node_count: 1, submitted: true});
     return completed;
   };
   assert.equal(await runClaim(service, '102-1', {provider}), 1);
@@ -78,9 +78,59 @@ test('encrypted runner/controller round is idempotent and preserves independent 
   assert.equal(state.lease, null);
   assert.deepEqual(state.targets, []);
   assert.equal(state.history.at(-1).task_id, 'task-1');
-  assert.ok(state.outbox.every(message => message.text.includes('余额：')));
+  const reports = state.outbox.filter(message => message.text.includes('检测本轮汇总'));
+  assert.equal(reports.length, 1);
+  assert.match(reports[0].text, /正常：1/);
+  assert.match(reports[0].text, /本轮费用参考估算：0\.01 元/);
+  assert.ok(!state.outbox.some(message => /余额|累计费用/.test(message.text)));
+  assert.ok(!reports[0].text.includes('http://example.test/'));
   assert.ok(!JSON.stringify(state.outbox).includes('PRIVATE_API_CANARY'));
   assert.ok(!JSON.stringify([...storage.data]).includes('PRIVATE_API_CANARY'));
+});
+
+test('official conflicting end counts remain uncertain through encrypted report delivery', async () => {
+  const {object, service} = fixture();
+  await queueTemporary(object);
+  let sends = 0;
+  class Socket {
+    readyState = 1;
+    listeners = {};
+    addEventListener(type, callback) {
+      this.listeners[type] = callback;
+      if (type === 'message') queueMicrotask(() => callback({data: JSON.stringify({rt: 1})}));
+    }
+    emit(value) { this.listeners.message({data: JSON.stringify(value)}); }
+    send(data) {
+      sends++;
+      const {txnid} = JSON.parse(data);
+      queueMicrotask(() => {
+        this.emit({rt: 1, txnid, type: 'TaskAccept', data: {'fixture-task:1': {
+          txnid, TaskId: 'fixture-task', nodeCount: 1,
+          nodes: {'101': {nodeinfo: {isp: '1'}}},
+        }}});
+        this.emit({rt: 1, txnid, type: 'NewData', data: {
+          TaskId: 'fixture-task', NodeID: 101, HttpCode: 200, TotalTime: 0.2,
+        }});
+        this.emit({rt: 1, txnid, type: 'TaskEnd', data: {
+          TaskId: 'fixture-task', TotalCount: 2, TotalCountOK: 1,
+          TotalCountErr: 0, TotalCountTimeout: 1,
+        }});
+      });
+    }
+    close() { this.readyState = 3; }
+  }
+  const provider = (job, credentials, hooks) => runProvider(job, credentials,
+    {...hooks, socketFactory: () => new Socket(), timeoutMs: 1000});
+  assert.equal(await runClaim(service, '104-1', {provider}), 1);
+  assert.equal(sends, 1);
+  const state = await object.load();
+  assert.equal(state.history.at(-1).status, 'uncertain');
+  assert.equal(state.history.at(-1).error_code, 'provider_result_incomplete');
+  const text = state.outbox.map(message => message.text).join('\n');
+  assert.match(text, /正常：0/);
+  assert.match(text, /费用待核实/);
+  assert.match(text, /不完整估算/);
+  assert.ok(!/余额|PRIVATE_API_CANARY/.test(text));
 });
 
 test('lost durable begin response cannot cause a provider submission', async () => {
