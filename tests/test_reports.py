@@ -137,8 +137,10 @@ def test_expiry_warning_is_listed_every_round_until_renewal():
     state = {}
     for days, details in [
         (31, 0),
-        (30, 1),
-        (29, 1),
+        (30, 0),
+        (29, 0),
+        (16, 0),
+        (15, 1),
         (14, 1),
         (13, 1),
         (7, 1),
@@ -149,12 +151,12 @@ def test_expiry_warning_is_listed_every_round_until_renewal():
     ]:
         messages = finish(state, [result(expiry=expiry(days))])
         assert len(messages) == 1 + details
-        assert state["last_summary"]["expiry_warnings"] == (0 if days > 30 else 1)
+        assert state["last_summary"]["expiry_warnings"] == (0 if days > 15 else 1)
     assert len(finish(state, [result(expiry=expiry(None, status="unknown"))])) == 1
     assert state["last_summary"]["expiry_warnings"] == 0
     assert len(finish(state, [result(expiry=expiry(-2))])) == 2
     assert len(finish(state, [result(expiry=expiry(365))])) == 1
-    assert len(finish(state, [result(expiry=expiry(30))])) == 2
+    assert len(finish(state, [result(expiry=expiry(15))])) == 2
 
 
 def test_domain_and_certificate_warnings_count_targets_not_resources():
