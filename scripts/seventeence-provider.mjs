@@ -20,7 +20,7 @@ export function speedRequest(job) {
   return request;
 }
 
-function summary(nodes,status,taskId,errorCode) {
+function summary(nodes,status,taskId,errorCode,allocated=null,submitted=false) {
   const operators={}; let success=0;
   for(const node of nodes.values()) {
     const key=node.operator, o=operators[key]??={node_count:0,success_count:0,failure_count:0,avg_seconds:null,max_seconds:null,_sum:0,_n:0};
@@ -28,19 +28,19 @@ function summary(nodes,status,taskId,errorCode) {
     if(node.seconds!==null){o._sum+=node.seconds;o._n++;o.max_seconds=o.max_seconds===null?node.seconds:Math.max(o.max_seconds,node.seconds)}
   }
   for(const o of Object.values(operators)){if(o._n)o.avg_seconds=o._sum/o._n;delete o._sum;delete o._n}
-  const result={status,node_count:nodes.size,success_count:success,failure_count:nodes.size-success,operators};
+  const result={status,node_count:nodes.size,success_count:success,failure_count:nodes.size-success,operators,allocated_node_count:allocated,submitted};
   if(taskId)result.task_id=taskId;
   if(errorCode)result.error_code=errorCode;
   return result;
 }
 
 export async function runProvider(job, credentials, {socketFactory=url=>new WebSocket(url),begin,accepted,timeoutMs=240000}={}) {
-  let socket, sent=false, permitted=false, taskId, done=false, chain=Promise.resolve(); const nodes=new Map();
+  let socket, sent=false, permitted=false, taskId, allocated=null, countConflict=false, done=false, chain=Promise.resolve(); const nodes=new Map(), nodeOperators=new Map();
   let request,url;
   try { request=speedRequest(job); url=authUrl(credentials.username,credentials.api_token); }
   catch { return {...summary(nodes,'blocked',null,'configuration_invalid'),begun:false}; }
   return await new Promise(resolve=>{
-    const finish=(status,code)=>{if(done)return;done=true;clearTimeout(timer);try{socket?.close()}catch{} resolve({...summary(nodes,status,taskId,code),begun:permitted})};
+    const finish=(status,code)=>{if(done)return;done=true;clearTimeout(timer);try{socket?.close()}catch{} resolve({...summary(nodes,status,taskId,code,allocated,sent),begun:permitted})};
     const timer=setTimeout(()=>finish(sent||permitted?'uncertain':'failed',sent||permitted?'provider_timeout':'provider_connect_failed'),Math.min(Math.max(timeoutMs,1),240000));
     try {socket=socketFactory(url)} catch {finish('failed','provider_connect_failed');return}
     let authenticated=false;
@@ -62,19 +62,60 @@ export async function runProvider(job, credentials, {socketFactory=url=>new WebS
         }
         if(message.txnid!==1)return;
         const data=message.data && typeof message.data==='object' && !Array.isArray(message.data)?message.data:{};
-        const id=data.TaskId;
-        if((typeof id==='string'||typeof id==='number') && String(id).length<=200 && String(id).length>0 && !/[\x00-\x1f\x7f]/.test(String(id)))taskId=String(id);
-        if(message.rt!==1 || message.type==='TaskErr'){finish('failed','provider_task_failed');return}
+        const validTaskId=id=>(typeof id==='string'||typeof id==='number') && String(id).length<=200 && String(id).length>0 && !/[\x00-\x1f\x7f]/.test(String(id));
+        if(message.type==='TaskErr' || message.type==='TaskEnd'){
+          if(validTaskId(data.TaskId)){
+            const incomingId=String(data.TaskId);
+            if(taskId && taskId!==incomingId){allocated=null;countConflict=true}
+            else taskId=incomingId;
+          }
+        }
+        if(message.rt!==1 || message.type==='TaskErr'){
+          finish(countConflict?'uncertain':'failed',countConflict?'provider_result_incomplete':'provider_task_failed');return
+        }
         if(message.type==='TaskAccept'){
-          if(taskId)try{await accepted(summary(nodes,'complete',taskId))}catch{}
+          const candidates=validTaskId(data.TaskId) ? [data] : Object.values(data).filter(x=>x && typeof x==='object' && !Array.isArray(x) && x.txnid===1 && validTaskId(x.TaskId));
+          if(candidates.length>1){
+            if(!taskId)taskId=String(candidates[0].TaskId);
+            allocated=null;countConflict=true;return
+          }
+          if(candidates.length!==1)return;
+          const receipt=candidates[0], incomingId=String(receipt.TaskId);
+          if(taskId && taskId!==incomingId){allocated=null;countConflict=true;return}
+          taskId=incomingId;
+          if(Number.isInteger(receipt.nodeCount) && receipt.nodeCount>=0 && receipt.nodeCount<=10000){
+            if(allocated!==null && allocated!==receipt.nodeCount){allocated=null;countConflict=true}
+            else if(!countConflict)allocated=receipt.nodeCount;
+          }
+          if(receipt.nodes && typeof receipt.nodes==='object' && !Array.isArray(receipt.nodes)){
+            for(const [nodeId,node] of Object.entries(receipt.nodes).slice(0,10000)){
+              const isp=Number(node?.nodeinfo?.isp);
+              if(nodeId.length<=100 && Number.isInteger(isp) && job.profile.operators.includes(isp))nodeOperators.set(nodeId,String(isp));
+            }
+          }
+          if(taskId)try{await accepted(summary(nodes,'complete',taskId,undefined,allocated,sent))}catch{}
         } else if(message.type==='NewData'){
+          if(validTaskId(data.TaskId)){
+            const incomingId=String(data.TaskId);
+            if(taskId && taskId!==incomingId)return;
+            taskId=incomingId;
+          }
           const id=data.NodeID;
           if((typeof id!=='number'&&typeof id!=='string') || String(id).length>100 || nodes.has(String(id)) || nodes.size>=10000)return;
           const raw=data.NodeInfo?.isp ?? data.NodeInfo?.ISP ?? data.NodeInfo?.Isp;
-          const operator=Number.isInteger(Number(raw)) && job.profile.operators.includes(Number(raw)) ? String(Number(raw)) : 'unknown';
+          const operator=nodeOperators.get(String(id)) ?? (Number.isInteger(Number(raw)) && job.profile.operators.includes(Number(raw)) ? String(Number(raw)) : 'unknown');
           const seconds=typeof data.TotalTime==='number' && Number.isFinite(data.TotalTime) && data.TotalTime>=0 && data.TotalTime<=240 ? data.TotalTime : null;
           nodes.set(String(id),{operator,seconds,ok:Number.isInteger(data.HttpCode)&&data.HttpCode>=200&&data.HttpCode<400});
-        } else if(message.type==='TaskEnd') finish(nodes.size?'complete':'failed',nodes.size?undefined:'no_results');
+        } else if(message.type==='TaskEnd'){
+          const total=Number.isInteger(data.TotalCount) && data.TotalCount>=0 && data.TotalCount<=10000 ? data.TotalCount : null;
+          if((allocated!==null && total!==null && allocated!==total) || (allocated!==null && nodes.size>allocated)){
+            allocated=null;countConflict=true;
+          }
+          if(countConflict || (total!==null && nodes.size!==total) || (allocated!==null && nodes.size<allocated)){
+            finish('uncertain','provider_result_incomplete');return
+          }
+          finish(nodes.size?'complete':'failed',nodes.size?undefined:'no_results');
+        }
 
       }).catch(()=>finish(sent||permitted?'uncertain':'failed',sent||permitted?'provider_disconnected':'provider_connect_failed'));
     });
