@@ -1,0 +1,1 @@
+{"name":"teleping-17ce","main":"worker.mjs","compatibility_date":"2026-10-01","durable_objects":{"bindings":[{"name":"STATE","class_name":"SeventeenCE"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["SeventeenCE"]}],"vars":{"WORKFLOW_FILE":"17ce.yml","WORKFLOW_REF":"main"}}
