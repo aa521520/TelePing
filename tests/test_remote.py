@@ -124,11 +124,10 @@ def test_finish_commits_encrypted_persistent_failure_and_current_expiry_details(
     assert payload['summary']['new_failures'] == 0
     assert payload['summary']['recovered'] == 0
     assert payload['summary']['expiry_warnings'] == 1
-    assert len(payload['messages']) == 2
-    details = payload['messages'][1]
-    assert f'持续异常：{target}' in details
-    assert f'到期提醒：{target}' in details
-    assert '域名：剩余 6 天' in details
+    assert len(payload['messages']) == 3
+    details = '\n'.join(payload['messages'][1:])
+    assert '异常域名（页面打开失败）：\npersistent.example.test' in details
+    assert '到期提醒（域名）：\npersistent.example.test 剩6天' in details
     assert '新增异常' not in details and '恢复正常' not in details
     assert payload['site_states'][target]['confirmed_status'] == 'failed'
     assert capsys.readouterr() == ('', '')

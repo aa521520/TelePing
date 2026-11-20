@@ -87,13 +87,13 @@ def test_unknown_does_not_recover_confirmed_failure_and_recovery_once():
     state = {}
     assert len(finish(state, [result(status="failed")])) == 2
     repeated = finish(state, [result(status="failed")])
-    assert len(repeated) == 2 and "持续异常：http://example.test" in repeated[1]
+    assert len(repeated) == 2 and "异常域名（页面打开失败）：\nexample.test" == repeated[1]
     assert state["last_summary"]["new_failures"] == 0
     for status in ("unconfirmed", "unmeasured"):
         pending = finish(state, [result(status=status)])
         assert not any("恢复正常" in m for m in pending)
-        assert "异常待确认：http://example.test" in pending[1]
-        assert "上次确认异常" in pending[1]
+        assert "example.test（上次：页面打开失败；尚未确认恢复）" in pending[1]
+        assert pending[1].startswith("待确认（" if status == "unconfirmed" else "未完成检测（")
     recovered = finish(state, [result()])
     assert state["last_summary"]["recovered"] == 1
     assert len(recovered) == 2 and "恢复正常" in recovered[1]
@@ -167,8 +167,8 @@ def test_domain_and_certificate_warnings_count_targets_not_resources():
     }
     messages = finish(state, [result(expiry=value)])
     assert state["last_summary"]["expiry_warnings"] == 1
-    assert len(messages) == 2
-    assert "域名" in messages[1] and "HTTPS" in messages[1]
+    assert len(messages) == 3
+    assert "HTTPS" in messages[1] and "域名" in messages[2]
 
 
 def test_replaced_https_path_does_not_keep_removed_certificate_warning():
@@ -208,14 +208,13 @@ def test_300_failures_all_appear_in_details():
     messages = finish(state, [result(target, status="failed") for target in targets], targets)
     assert state["last_summary"]["failed"] == 300
     assert state["last_summary"]["new_failures"] == 300
-    assert len(messages) == 2
-    assert all(target in messages[1] for target in targets)
+    assert all(target.removeprefix("http://") in "\n".join(messages[1:]) for target in targets)
     repeated = finish(state, [result(target, status="failed") for target in targets], targets, round_id="next")
     assert state["last_summary"]["new_failures"] == 0
-    assert len(repeated) == 2 and all(target in repeated[1] for target in targets)
+    assert repeated[1:] == messages[1:]
 
 
-def test_300_failures_batch_into_two_logical_messages_and_few_telegram_chunks():
+def test_300_failures_batch_into_compact_pages_and_few_telegram_chunks():
     import json
 
     import httpx
@@ -224,9 +223,9 @@ def test_300_failures_batch_into_two_logical_messages_and_few_telegram_chunks():
 
     targets = [f"http://site{i}.example.test" for i in range(300)]
     messages = finish({}, [result(target, status="failed") for target in targets], targets)
-    assert len(messages) == 2
+    assert 2 <= len(messages) <= 4
     assert "普通检测汇总" in messages[0]
-    assert all(target in messages[1] for target in targets)
+    assert all(target.removeprefix("http://") in "\n".join(messages[1:]) for target in targets)
     sent = []
 
     def handler(request):
@@ -254,7 +253,7 @@ def test_expired_certificate_without_date_is_listed_every_round_until_verified_r
 
     messages = finish(state, [result(expiry=cert("expired", None))])
     assert len(messages) == 2
-    assert "证书已过期，具体日期无法确认" in messages[1]
+    assert "HTTPS 证书" in messages[1] and "已过期（日期不明）" in messages[1]
     assert state["last_summary"]["expiry_warnings"] == 1
     assert len(finish(state, [result(expiry=cert("expired", None))])) == 2
     finish(state, [result(expiry=cert("unknown", None))])
@@ -268,7 +267,8 @@ def test_changed_failure_reason_is_new_but_unchanged_failure_still_has_details()
     state = {}
     for reason, new_count in [("TIMEOUT", 1), ("TIMEOUT", 0), ("HTTP_500", 1), ("HTTP_500", 0)]:
         messages = finish(state, [result(status="failed", reason=reason)])
-        assert len(messages) == 2 and reason in messages[1]
+        translated = "访问超时" if reason == "TIMEOUT" else "网站服务器错误（500）"
+        assert len(messages) == 2 and translated in messages[1]
         assert state["last_summary"]["new_failures"] == new_count
 
 
@@ -285,7 +285,7 @@ def test_cached_expiry_date_is_recomputed_at_report_time_without_mutating_result
     state = {}
     cached = expiry(1)
     messages = finish(state, [result(expiry=cached)], now=_NOW + 2 * 86400)
-    assert "已到期 1 天" in messages[1]
+    assert "已过期1天" in messages[1]
     assert cached["domain"]["days"] == 1
     unknown = deepcopy(cached)
     unknown["domain"]["status"] = "unknown"
